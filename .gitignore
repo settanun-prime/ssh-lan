@@ -1,0 +1,12 @@
+# build output and local scratch
+*.exe
+logs/
+data-demo/
+
+# anything that could hold keys or machine-specific settings
+config.json
+*.bak-*
+id_*
+*.pem
+*.key
+.env

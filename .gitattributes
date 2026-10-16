@@ -1,0 +1,5 @@
+* text=auto
+# a CRLF bash script fails on Linux ("$'\r': command not found")
+*.sh text eol=lf
+*.png binary
+*.ico binary
