@@ -1,12 +1,16 @@
 ﻿# SSH LAN — one script, menu TUI or CLI. Run on the Windows machine that ACCEPTS ssh (server).
 #Requires -Version 5.1
 param(
-    [ValidateSet('', 'help', 'status', 'harden', 'add-client', 'remove', 'client')]
+    [ValidateSet('', 'help', 'status', 'harden', 'add-client', 'remove', 'client', 'pair')]
     [string]$Action = '',
     [string]$LoginUser = $env:USERNAME,
     [string]$Subnet = '',
     [string]$MyPubKeyPath = '',
     [string]$MyPubKey = '',
+    [string]$Target = '',
+    [string]$AsUser = '',
+    [string]$Alias = '',
+    [switch]$Both,
     [switch]$UninstallServer
 )
 $ErrorActionPreference = 'Stop'
@@ -146,7 +150,7 @@ function Invoke-SshLanAddClient {
 
 function Invoke-SshLanHarden {
     param([string]$SubnetIn, [string]$Path = '', [string]$Line = '')
-    if (-not $SubnetIn) { throw 'Subnet required, e.g. 192.168.1.0/24' }
+    if (-not $SubnetIn) { throw 'Subnet required, e.g. 192.0.2.0/24' }
     Assert-SshLanAdmin
     if (-not (Get-Service sshd -ErrorAction SilentlyContinue)) { throw 'Install OpenSSH Server first (Windows Optional features).' }
     if (-not $Path -and -not $Line) {
@@ -316,7 +320,7 @@ function Select-SshLanSubnet {
     Write-Host ''
     $pick = Read-Host '  หมายเลข'
     if ($pick -eq '0') {
-        $manual = Read-Host '  IP เช่น 192.168.1.50'
+        $manual = Read-Host '  IP เช่น 192.0.2.50'
         if ($manual -match '^\d+\.\d+\.\d+\.\d+$') { return "$manual/32" }
         if ($manual -match '^\d+\.\d+\.\d+\.\d+/\d+$') { return $manual }
         throw 'รูปแบบ IP ไม่ถูก'
@@ -341,8 +345,8 @@ function Get-SshLanAutoPublicKey {
     if (-not $found) {
         $priv = Join-Path $dir 'id_ed25519'
         Show-SshLanMotion -Label 'กำลังสร้างกุญแจ' -Ms 600
-        & ssh-keygen -q -t ed25519 -f $priv -N ([string]::Empty) -C "$env:USERNAME@$env:COMPUTERNAME"
-        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath "$priv.pub")) { throw 'สร้างกุญแจไม่สำเร็จ' }
+        $madeKey = New-SshLanKey $priv "$env:USERNAME@$env:COMPUTERNAME"
+        if (-not $madeKey) { throw 'สร้างกุญแจไม่สำเร็จ' }
         $found = "$priv.pub"
         $made = $true
     }
@@ -579,7 +583,7 @@ function Repair-ThisClient {
         if ($y -notmatch '^[nN]') {
             New-Item -ItemType Directory -Force -Path (Split-Path $key) | Out-Null
             Show-SshLanMotion -Label 'สร้างกุญแจ' -Ms 500
-            & ssh-keygen -q -t ed25519 -f $key -N ([string]::Empty) -C "$env:USERNAME@$env:COMPUTERNAME"
+            if (-not (New-SshLanKey $key "$env:USERNAME@$env:COMPUTERNAME")) { throw 'สร้างกุญแจไม่สำเร็จ' }
             Write-Host '  นำบรรทัดนี้ไปเพิ่มบนเครื่องรับ SSH (ปุ่ม เพิ่มกุญแจเครื่องอื่น)' -ForegroundColor Yellow
             Get-Content -LiteralPath $pub | Out-Host
         }
@@ -591,6 +595,140 @@ function Repair-ThisClient {
     Write-Host ''
     Write-Host "  เสร็จ ปิด VS Code แล้วเปิดใหม่ แล้วเชื่อม $($script:SshLanCfg.hostAlias)" -ForegroundColor Green
     Write-Host ''
+}
+
+# --- pairing: put this machine's key on another machine (Windows, Linux or macOS) ---
+# Every machine keeps its own key pair. Only public keys travel; no private key is ever copied.
+
+# Windows PowerShell 5.1 drops an empty argument, so the empty passphrase goes through a raw argument string
+function New-SshLanKey([string]$Path, [string]$Comment) {
+    $p = Start-Process -FilePath ssh-keygen -ArgumentList "-q -t ed25519 -N `"`" -f `"$Path`" -C `"$Comment`"" -NoNewWindow -Wait -PassThru
+    return ($p.ExitCode -eq 0 -and (Test-Path -LiteralPath "$Path.pub"))
+}
+
+function Get-SshLanOwnKey {
+    $dir = Join-Path $env:USERPROFILE '.ssh'
+    if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+    $key = Join-Path $dir $script:SshLanCfg.identityFile
+    if (-not (Test-Path -LiteralPath "$key.pub")) {
+        if (-not (New-SshLanKey $key "$env:USERNAME@$env:COMPUTERNAME-ssh-lan")) { throw 'สร้างกุญแจไม่สำเร็จ' }
+    }
+    return $key
+}
+
+# a public key line is data, but it ends up inside a command on another machine: only known-safe characters pass
+function Test-SshLanPublicKeyLine([string]$Line) {
+    return [bool]($Line -match '^(ssh-(ed25519|rsa)|ecdsa-sha2-nistp\d{3}) [A-Za-z0-9+/=]+( [A-Za-z0-9@._-]+)?$')
+}
+
+function ConvertTo-SshLanEncodedCommand([string]$Script) {
+    return [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Script))
+}
+
+# ssh in a window of its own: the target's password is typed there, this program never sees it
+function Invoke-SshLanSshWindow([string[]]$SshArgs) {
+    $ssh = Join-Path $env:SystemRoot 'System32\OpenSSH\ssh.exe'
+    $quoted = ($SshArgs | ForEach-Object { "'" + $_.Replace("'", "''") + "'" }) -join ' '
+    $enc = ConvertTo-SshLanEncodedCommand "& '$ssh' $quoted; exit `$LASTEXITCODE"
+    $p = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') -ArgumentList '-NoProfile', '-EncodedCommand', $enc -PassThru
+    # wait without freezing the window when the app is the caller (Update-Ui exists only there)
+    while (-not $p.HasExited) {
+        if (Get-Command Update-Ui -CommandType Function -ErrorAction SilentlyContinue) { Update-Ui }
+        Start-Sleep -Milliseconds 150
+    }
+    $p.WaitForExit()
+    return $p.ExitCode
+}
+
+# one Host block per paired machine in ~/.ssh/config, replaced when it is already there
+function Add-SshLanHostEntry([string]$Alias, [string]$HostName, [string]$User, [string]$Key) {
+    $cfg = Join-Path $env:USERPROFILE '.ssh\config'
+    $text = if (Test-Path -LiteralPath $cfg) { [IO.File]::ReadAllText($cfg) } else { '' }
+    if ($text) { Backup-SshLanFile $cfg }
+    $q = [regex]::Escape($Alias)
+    $text = [regex]::Replace($text, "(?ms)^Host\s+$q\s*\r?\n.*?(?=^Host\s|\z)", '')
+    $block = "Host $Alias`r`n  HostName $HostName`r`n  User $User`r`n  IdentityFile ~/.ssh/$(Split-Path -Leaf $Key)`r`n  IdentitiesOnly yes`r`n  StrictHostKeyChecking accept-new`r`n"
+    [IO.File]::WriteAllText($cfg, $text.TrimEnd() + $(if ($text.Trim()) { "`r`n`r`n" } else { '' }) + $block)
+}
+
+function Show-SshLanFoundHosts {
+    Write-Host 'กำลังสแกนหาเครื่องที่เปิดพอร์ต 22 ในวง LAN...'
+    $found = @(Find-SshLanSshHosts)
+    if ($found.Count -eq 0) { Write-Host ' [!] ไม่พบเครื่องที่เปิดรับ SSH'; return }
+    foreach ($ip in $found) { Write-Host "  พบ $ip" }
+    Write-Host 'พิมพ์ผู้ใช้@IP ของเครื่องที่ต้องการในช่อง แล้วกดจับคู่'
+}
+
+function Invoke-SshLanPair {
+    param([string]$Target, [string]$User, [string]$Alias, [switch]$Both)
+    if ($Target -match '^([^@\s]+)@(.+)$') { $User = $Matches[1]; $Target = $Matches[2] }
+    if ($Target -notmatch '^[A-Za-z0-9][A-Za-z0-9.-]*$') { throw 'ชื่อหรือ IP ของเครื่องปลายทางไม่ถูกต้อง' }
+    if (-not $User) { $User = $script:SshLanCfg.serverUser }
+    if ($User -notmatch '^[A-Za-z0-9._-]+$') { throw 'ชื่อผู้ใช้ของเครื่องปลายทางไม่ถูกต้อง' }
+    if ($Alias -and $Alias -notmatch '^[A-Za-z0-9._-]+$') { throw 'ชื่อเรียก (alias) ใช้ได้เฉพาะ a-z 0-9 . _ -' }
+    if (-not (Test-SshLanPort $Target 22 1500)) { throw "เครื่อง $Target ไม่ตอบที่พอร์ต 22 — เปิดรับ SSH บนเครื่องนั้นก่อน" }
+
+    $key = Get-SshLanOwnKey
+    $pub = (Get-Content -LiteralPath "$key.pub" -TotalCount 1).Trim()
+    if (-not (Test-SshLanPublicKeyLine $pub)) { throw 'รูปแบบ public key ไม่ถูกต้อง' }
+
+    $sys32 = Join-Path $env:SystemRoot 'System32\OpenSSH'
+    $ssh = Join-Path $sys32 'ssh.exe'
+    # the server's own banner tells Windows (OpenSSH_for_Windows) from Linux and macOS, which take the same commands
+    $banner = (& (Join-Path $sys32 'ssh-keyscan.exe') -T 3 $Target 2>&1 | Out-String)
+    $isWindows = $banner -match '(?i)for_windows'
+    Write-Host ('เครื่องปลายทาง: ' + $(if ($isWindows) { 'Windows' } else { 'Linux / macOS' }))
+
+    if ($isWindows) {
+        $remote = 'powershell -NoProfile -EncodedCommand ' + (ConvertTo-SshLanEncodedCommand @"
+`$ProgressPreference='SilentlyContinue'; `$k='$pub'; `$adm=([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole('Administrators')
+`$f=if(`$adm){Join-Path `$env:ProgramData 'ssh\administrators_authorized_keys'}else{Join-Path `$env:USERPROFILE '.ssh\authorized_keys'}
+New-Item -Force -ItemType Directory (Split-Path `$f)|Out-Null
+if(-not(Test-Path `$f) -or -not(Select-String -LiteralPath `$f -SimpleMatch -Quiet `$k)){Add-Content -LiteralPath `$f -Value `$k -Encoding ascii}
+if(`$adm){icacls `$f /inheritance:r /grant 'Administrators:F' /grant 'SYSTEM:F'|Out-Null}
+"@)
+    } else {
+        $remote = "umask 077; mkdir -p ~/.ssh; touch ~/.ssh/authorized_keys; grep -qxF '$pub' ~/.ssh/authorized_keys || echo '$pub' >> ~/.ssh/authorized_keys"
+    }
+
+    Write-Host 'ใส่รหัสผ่านของเครื่องปลายทางในหน้าต่างที่เปิดขึ้น (โปรแกรมนี้ไม่เห็นรหัสผ่าน)'
+    $code = Invoke-SshLanSshWindow @('-o', 'StrictHostKeyChecking=accept-new', '-o', 'ConnectTimeout=10', "$User@$Target", $remote)
+    if ($code -ne 0) { throw "ใส่กุญแจที่เครื่องปลายทางไม่สำเร็จ (ssh ออกด้วยรหัส $code) — ตรวจชื่อผู้ใช้/รหัสผ่าน และดูว่าเครื่องนั้นยังเปิดให้ล็อกอินด้วยรหัสผ่านอยู่" }
+
+    # prove it: the key alone must open the door now
+    $common = @('-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'IdentitiesOnly=yes', '-i', $key, "$User@$Target")
+    $name = @(& $ssh @common hostname 2>$null)
+    if ($LASTEXITCODE -ne 0) { throw 'ใส่กุญแจแล้ว แต่ยังเข้าด้วยกุญแจไม่ได้ — เครื่องปลายทางอาจไม่ยอมรับ public key' }
+    if (-not $Alias) { $Alias = (("$($name | Select-Object -First 1)").Trim().ToLower() -replace '[^a-z0-9-]', '-').Trim('-') }
+    if (-not $Alias) { $Alias = $Target }
+    Add-SshLanHostEntry $Alias $Target $User $key
+    Write-Host " [✓] จับคู่สำเร็จ: เครื่องนี้เข้า $Target ได้แล้ว ลอง  ssh $Alias"
+
+    if (-not $Both) { return }
+
+    # the other way round: take the target's PUBLIC key (made there if it has none) and allow it here
+    $leaf = Split-Path -Leaf $key
+    if ($isWindows) {
+        $fetch = 'powershell -NoProfile -EncodedCommand ' + (ConvertTo-SshLanEncodedCommand @"
+`$ProgressPreference='SilentlyContinue'; `$k=Join-Path `$env:USERPROFILE '.ssh$leaf'
+if(-not(Test-Path "`$k.pub")){New-Item -Force -ItemType Directory (Split-Path `$k)|Out-Null; Start-Process ssh-keygen -ArgumentList "-q -t ed25519 -N `"`" -f `"`$k`"" -NoNewWindow -Wait}
+Get-Content "`$k.pub" -TotalCount 1
+"@)
+    } else {
+        $fetch = "mkdir -p ~/.ssh; test -f ~/.ssh/$leaf.pub || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/$leaf; head -n1 ~/.ssh/$leaf.pub"
+    }
+    $theirs = ("$(& $ssh @common $fetch 2>$null | Select-Object -First 1)").Trim()
+    if (-not (Test-SshLanPublicKeyLine $theirs)) { throw 'ดึง public key ของเครื่องปลายทางไม่สำเร็จ' }
+    if (-not (Get-Service sshd -ErrorAction SilentlyContinue)) {
+        Write-Host ' [!] เครื่องนี้ยังไม่ได้ติดตั้ง OpenSSH Server จึงยังให้เครื่องนั้นเข้ามาไม่ได้ (ติดตั้งแล้วกดจับคู่อีกครั้ง)'
+        return
+    }
+    $info = Get-SshLanAdminKeyFile -User $env:USERNAME
+    if ($info.IsAdminUser -and -not (Test-SshLanAdmin)) { throw 'ต้องเปิดโปรแกรมแบบผู้ดูแลก่อน จึงจะให้เครื่องนั้นเข้ามาที่เครื่องนี้ได้' }
+    [void](Add-SshLanKeyLine -Path $info.Path -Key $theirs)
+    if ($info.IsAdminUser) { Set-SshLanKeyAcl -Path $info.Path }
+    $me = Get-SshLanPrimaryLanIp
+    Write-Host " [✓] เครื่องนั้นเข้าเครื่องนี้ได้แล้ว: ที่เครื่องนั้นพิมพ์  ssh $env:USERNAME@$me"
 }
 
 function Show-SshLanMenu {
@@ -658,11 +796,12 @@ if ($Action) {
         'status' { Get-SshLanStatus }
         'add-client' { Invoke-SshLanAddClient -Path $MyPubKeyPath -Line $MyPubKey }
         'harden' {
-            if (-not $Subnet) { throw 'Pass -Subnet, e.g. 192.168.1.0/24' }
+            if (-not $Subnet) { throw 'Pass -Subnet, e.g. 192.0.2.0/24' }
             Invoke-SshLanHarden -SubnetIn $Subnet -Path $MyPubKeyPath -Line $MyPubKey
         }
         'remove' { Invoke-SshLanRemove -Uninstall:$UninstallServer }
         'client' { Repair-ThisClient }
+        'pair' { if ($Target) { Invoke-SshLanPair -Target $Target -User $AsUser -Alias $Alias -Both:$Both } else { Show-SshLanFoundHosts } }
     }
 } else {
     Start-SshLanTui

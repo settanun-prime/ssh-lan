@@ -1,6 +1,6 @@
 ﻿#Requires -RunAsAdministrator
 # Pin this PC's LAN address to an IP you choose, or hand it back to DHCP.
-#   set-lan-ip.ps1 -Ip 192.168.1.50   (full address)
+#   set-lan-ip.ps1 -Ip 192.0.2.50   (full address)
 #   set-lan-ip.ps1 -Ip 50             (last number only, keeps the current subnet)
 #   set-lan-ip.ps1 -Dhcp              (automatic address again)
 param(

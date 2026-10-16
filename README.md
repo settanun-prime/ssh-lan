@@ -19,6 +19,7 @@ Key-only login, a firewall rule limited to your LAN, and an optional fixed IP ad
 | เพิ่มกุญแจเครื่องอื่น / Add client key | Reads a public key from the clipboard and authorises it |
 | ตั้งเลข IP คงที่ / Static IP | Pins this PC to the address you type (see below) |
 | คืนเป็น IP อัตโนมัติ / DHCP | Hands the address back to the router |
+| จับคู่เครื่อง / Pair | Puts this PC's public key on another machine (Windows, Linux or macOS) so it can SSH in; optionally lets that machine SSH back in (see below) |
 | ปิดการรับ SSH / Disable | Stops `sshd` and removes the firewall rule |
 
 **On a PC that connects (a client)** one click sets VS Code / Cursor to treat the host as Windows, writes the `~/.ssh/config` entry, checks your key and tests the connection.
@@ -48,7 +49,7 @@ powershell -NoProfile -STA -ExecutionPolicy Bypass -File scripts\app.ps1
 
 ## Fixed IP address
 
-The static-IP box is pre-filled with your current address. Type a full address (`192.168.1.50`) or just the last number (`50`) and press **ตั้งเลข IP คงที่**.
+The static-IP box is pre-filled with your current address. Type a full address (`192.0.2.50`) or just the last number (`50`) and press **ตั้งเลข IP คงที่**.
 
 Before touching anything the script checks that the address is in your subnet, is not the network, broadcast or router address, and that no other device answers on it. If applying fails it switches the adapter back to DHCP so the PC is never left without an address.
 
@@ -58,22 +59,38 @@ Good to know:
 - Use **คืนเป็น IP อัตโนมัติ** to go back to DHCP at any time.
 - DNS stays as it was (the router is used if none was set).
 
+## Pair machines
+
+Pairing lets machines SSH into each other without you copying keys around. Type `user@address` of the other machine in the pair box (leave it empty and press the button to scan the LAN for machines that answer on port 22), press **จับคู่เครื่อง**, and type that machine's password in the window that opens (this program never sees it).
+
+What happens: this PC makes its own key pair if it has none, puts the **public** key on the other machine, proves the key now opens the door, and writes a `Host` entry so `ssh <name>` works. The other machine can be **Windows, Linux or macOS**; the server's own banner tells Windows from the rest and the right commands are sent.
+
+Tick **ให้เครื่องนั้นเข้ามาหาเครื่องนี้ด้วย** (`--both`) to make it two-way: the other machine makes its own key if needed, and its public key is allowed here. This PC must accept SSH for that (and run as administrator on Windows).
+
+- Every machine keeps its own key pair. A private key never leaves the machine that made it.
+- The first contact needs a login: the other machine must still allow password login. Harden turns it off, so **pair first, harden after**, or use a key the machine already trusts.
+- A target that already has the key is left as it is (no duplicate line).
+
 ## Command line
 
 The same logic is available without the window.
 
-Windows: `scripts\ssh-lan\ssh-lan.ps1` (menu) or with `-Action help|status|harden|add-client|remove|client`
+Windows: `scripts\ssh-lan\ssh-lan.ps1` (menu) or with `-Action help|status|harden|add-client|remove|client|pair`
 
 ```powershell
-.\scripts\ssh-lan\ssh-lan.ps1 -Action harden -Subnet 192.168.1.0/24
+.\scripts\ssh-lan\ssh-lan.ps1 -Action harden -Subnet 192.0.2.0/24
+.\scripts\ssh-lan\ssh-lan.ps1 -Action pair -Target alice@192.0.2.20 -Both
 .\scripts\ssh-lan\set-lan-ip.ps1 -Ip 50      # or -Dhcp
 ```
 
-Linux client or server: `scripts/ssh-lan/ssh-lan.sh`
+Linux and macOS: `scripts/ssh-lan/ssh-lan.sh`
 
 ```bash
 chmod +x scripts/ssh-lan/ssh-lan.sh && scripts/ssh-lan/ssh-lan.sh
+scripts/ssh-lan/ssh-lan.sh pair --target alice@192.0.2.20 --both
 ```
+
+macOS: client, pairing and LAN discovery are supported (BSD `sed`, `ifconfig` and `arp` are handled). Turning a Mac into a hardened server is partial: the `sshd_config.d` drop-in is written, but Remote Login must be switched on in System Settings and there is no firewall step. Not tested on a Mac yet.
 
 ## Settings
 
@@ -91,14 +108,14 @@ Nothing about your machines is hard-coded. A client finds the server by itself: 
 
 ## Version
 
-Current version: **0.1.0**. It lives in [`VERSION`](VERSION) and is shown in the window title, the Linux menu and the built exe's file properties. Change that file (and the version in `scripts/app.manifest`) to release a new one.
+Current version: **0.2.0** (adds pairing and macOS support; 0.1.0 was the first release). It lives in [`VERSION`](VERSION) and is shown in the window title, the Linux menu and the built exe's file properties. Change that file (and the version in `scripts/app.manifest`) to release a new one.
 
 ## Security notes
 
 - Nothing secret is stored in this repo. Keys live in your own `~/.ssh`, settings in `%LocalAppData%`.
 - Hardening writes `PasswordAuthentication no`, `AuthenticationMethods publickey`, `MaxAuthTries 3` and `AllowUsers <you>` to `sshd_config`, after saving a timestamped backup next to it.
 - Clients connect with `StrictHostKeyChecking accept-new`: the first connection to a host is trusted, later key changes are refused.
-- `ssh-lan.sh` can, when a Linux client has no key yet, copy its key file (a private key, `~/.ssh/id_ed25519_lan` by default) from the server over an already-working SSH login. Prefer giving every client its own key and using **Add client key** instead.
+- Every machine makes its own key pair; pairing sends only public keys, and a private key is never copied from another machine.
 - The launcher starts PowerShell with an execution-policy bypass for this one script only.
 
 ## Layout

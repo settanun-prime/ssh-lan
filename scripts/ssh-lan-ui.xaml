@@ -1,6 +1,6 @@
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="SSH LAN" Width="900" Height="800" MinWidth="820" MinHeight="700"
+        Title="SSH LAN" Width="900" Height="860" MinWidth="820" MinHeight="700"
         WindowStyle="None" ResizeMode="CanResize" AllowsTransparency="True"
         Background="Transparent" WindowStartupLocation="CenterScreen"
         FontFamily="Leelawadee UI, Segoe UI" FontSize="14" Foreground="#F4F7FB">
@@ -762,10 +762,16 @@
                 <Button x:Name="BtnRefresh" Content="อัปเดตสถานะ" Margin="0,0,0,6"/>
                 <StackPanel x:Name="IpPanel">
                   <TextBlock Text="เลข IP คงที่ของเครื่องนี้" Style="{StaticResource StatLabel}" Margin="0,6,0,6"
-                             ToolTip="พิมพ์เลขเต็ม เช่น 192.168.1.50 หรือพิมพ์เฉพาะตัวท้าย เช่น 50"/>
-                  <TextBox x:Name="StaticIpBox" Margin="0,0,0,6" ToolTip="พิมพ์เลขเต็ม เช่น 192.168.1.50 หรือพิมพ์เฉพาะตัวท้าย เช่น 50"/>
+                             ToolTip="พิมพ์เลขเต็ม เช่น 192.0.2.50 หรือพิมพ์เฉพาะตัวท้าย เช่น 50"/>
+                  <TextBox x:Name="StaticIpBox" Margin="0,0,0,6" ToolTip="พิมพ์เลขเต็ม เช่น 192.0.2.50 หรือพิมพ์เฉพาะตัวท้าย เช่น 50"/>
                   <Button x:Name="BtnStaticIp" Content="ตั้งเลข IP คงที่" Margin="0,0,0,6"/>
                   <Button x:Name="BtnDhcp" Content="คืนเป็น IP อัตโนมัติ" Margin="0,0,0,6"/>
+                </StackPanel>
+                <StackPanel x:Name="PairPanel">
+                  <TextBlock Text="จับคู่กับเครื่องอื่น (ผู้ใช้@IP)" Style="{StaticResource StatLabel}" Margin="0,6,0,6"/>
+                  <TextBox x:Name="PairBox" Margin="0,0,0,6" ToolTip="เช่น user@192.0.2.20 หรือเว้นว่างแล้วกดปุ่มเพื่อสแกนหาเครื่องที่เปิดรับ SSH"/>
+                  <CheckBox x:Name="PairBoth" Content="ให้เครื่องนั้นเข้ามาหาเครื่องนี้ด้วย" Foreground="#C5CEDD" FontSize="12" Margin="2,0,0,8"/>
+                  <Button x:Name="BtnPair" Content="จับคู่เครื่อง" Margin="0,0,0,6"/>
                 </StackPanel>
                 <Button x:Name="BtnAdmin" Content="เปิดใหม่แบบผู้ดูแล" Margin="0,0,0,6"/>
                 <Button x:Name="BtnRemove" Style="{StaticResource DangerButton}" Content="ปิดการรับ SSH"/>

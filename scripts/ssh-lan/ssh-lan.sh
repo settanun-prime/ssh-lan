@@ -16,6 +16,10 @@ SUBNET="${SUBNET:-}"
 MY_PUB_KEY_PATH="${MY_PUB_KEY_PATH:-}"
 MY_PUB_KEY="${MY_PUB_KEY:-}"
 UNINSTALL_SERVER="${UNINSTALL_SERVER:-0}"
+PAIR_TARGET="${PAIR_TARGET:-}"
+PAIR_USER="${PAIR_USER:-}"
+PAIR_ALIAS="${PAIR_ALIAS:-}"
+PAIR_BOTH="${PAIR_BOTH:-0}"
 
 # --- defaults (override with the SSH_* environment variables) ---
 SSH_HOST_ALIAS="${SSH_HOST_ALIAS:-ssh-lan}"
@@ -30,14 +34,18 @@ UFW_RULE_COMMENT='ssh-lan'
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    help|status|harden|add-client|remove|client) ACTION="$1"; shift ;;
+    help|status|harden|add-client|remove|client|pair) ACTION="$1"; shift ;;
+    --target) PAIR_TARGET="$2"; shift 2 ;;
+    --as) PAIR_USER="$2"; shift 2 ;;
+    --alias) PAIR_ALIAS="$2"; shift 2 ;;
+    --both) PAIR_BOTH=1; shift ;;
     --login-user) LOGIN_USER="$2"; shift 2 ;;
     --subnet) SUBNET="$2"; shift 2 ;;
     --pubkey-path) MY_PUB_KEY_PATH="$2"; shift 2 ;;
     --pubkey) MY_PUB_KEY="$2"; shift 2 ;;
     --uninstall-server) UNINSTALL_SERVER=1; shift ;;
     -h|--help)
-      echo "Usage: $0 [help|status|harden|add-client|remove|client] [--subnet CIDR] [--pubkey-path FILE]"
+      echo "Usage: $0 [help|status|harden|add-client|remove|client|pair] [--subnet CIDR] [--pubkey-path FILE] [--target USER@HOST --alias NAME --both]"
       exit 0
       ;;
     *) echo "Unknown arg: $1" >&2; exit 2 ;;
@@ -119,8 +127,20 @@ need_cmd() {
   command -v "$1" >/dev/null 2>&1 || { _red "  ต้องมีคำสั่ง: $1"; exit 1; }
 }
 
+OS_KIND="$(uname -s)"   # Linux or Darwin (macOS)
+
+# sed -i differs on macOS (BSD): it wants a suffix argument
+sed_i() { if sed --version >/dev/null 2>&1; then sed -i "$@"; else sed -i '' "$@"; fi; }
+
+# first address for a name: getent on Linux, dscacheutil on macOS
+resolve_host() {
+  getent hosts "$1" 2>/dev/null | awk '{print $1; exit}' && return 0
+  dscacheutil -q host -a name "$1" 2>/dev/null | awk '/^ip_address:/ {print $2; exit}'
+}
+
 is_server() {
   if [[ "${SSH_LAN_SERVER:-}" == '1' ]]; then return 0; fi
+  if [[ "$OS_KIND" == 'Darwin' ]]; then nc -z -w1 127.0.0.1 22 >/dev/null 2>&1; return; fi
   systemctl is-active sshd >/dev/null 2>&1 || systemctl is-active ssh >/dev/null 2>&1 || return 1
   ss -ltn 2>/dev/null | grep -q ':22 ' && return 0
   return 1
@@ -225,7 +245,23 @@ read_pubkey_interactive() {
 PRIVATE_RE='^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.)'
 
 lan_cidrs() {
+  if [[ "$OS_KIND" == 'Darwin' ]]; then
+    # ifconfig prints the mask in hex (0xffffff00): count its leading ones
+    local ip mask m p
+    while read -r ip mask; do
+      [[ "$ip" =~ $PRIVATE_RE ]] || continue
+      m=$((mask)); p=0
+      while (( m & 0x80000000 )); do p=$((p + 1)); m=$(( (m << 1) & 0xFFFFFFFF )); done
+      echo "$ip/$p"
+    done < <(ifconfig 2>/dev/null | awk '/inet / {print $2, $4}')
+    return 0
+  fi
   ip -4 -o addr show 2>/dev/null | awk '{print $4}' | grep -E "$PRIVATE_RE" || true
+}
+
+# addresses of other machines this one has talked to recently
+neighbors() {
+  if [[ "$OS_KIND" == 'Darwin' ]]; then arp -an 2>/dev/null | awk -F'[()]' '{print $2}'; else ip neigh show 2>/dev/null | awk '{print $1}'; fi
 }
 
 lan_ips() {
@@ -266,7 +302,7 @@ select_subnet() {
   while read -r nip; do
     [[ -n "$nip" ]] || continue
     add_choice "${nip}/32" 'neighbor'
-  done < <(ip neigh show 2>/dev/null | awk '{print $1}' | grep -E "$PRIVATE_RE" | sort -u)
+  done < <(neighbors | grep -E "$PRIVATE_RE" | sort -u)
 
   if [[ -r /var/log/auth.log ]]; then
     while read -r rip; do add_choice "${rip}/32" 'recent SSH'; done < <(
@@ -295,7 +331,7 @@ select_subnet() {
   printf '  \033[32m[0]\033[0m \033[37mพิมพ์ IP เอง\033[0m\n\n'
   read -r -p '  หมายเลข: ' pick
   if [[ "$pick" == '0' ]]; then
-    read -r -p '  IP เช่น 192.168.1.50:' manual
+    read -r -p '  IP เช่น 192.0.2.50:' manual
     if [[ "$manual" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then echo "${manual}/32"; return; fi
     if [[ "$manual" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$ ]]; then echo "$manual"; return; fi
     _red '  รูปแบบ IP ไม่ถูก'; exit 1
@@ -398,7 +434,7 @@ cmd_harden() {
     _yellow '  ติดตั้ง openssh-server ก่อน (เช่น apt install openssh-server)'
     exit 1
   }
-  [[ -n "$SUBNET" ]] || { _red '  ต้องระบุ --subnet เช่น 192.168.1.0/24'; exit 1; }
+  [[ -n "$SUBNET" ]] || { _red '  ต้องระบุ --subnet เช่น 192.0.2.0/24'; exit 1; }
   local sn="$SUBNET"
   local pub
   if [[ -n "$MY_PUB_KEY" ]]; then pub=$(resolve_pubkey)
@@ -466,7 +502,7 @@ EOF
   backup_file "$path"
   if grep -q "\"${SSH_HOST_ALIAS}\"" "$path" 2>/dev/null; then
     if grep -q "\"${SSH_HOST_ALIAS}\": \"windows\"" "$path"; then echo 'ตั้งไว้แล้ว'; return; fi
-    sed -i "s/\"${SSH_HOST_ALIAS}\"[[:space:]]*:[[:space:]]*\"[^\"]*\"/\"${SSH_HOST_ALIAS}\": \"windows\"/" "$path"
+    sed_i "s/\"${SSH_HOST_ALIAS}\"[[:space:]]*:[[:space:]]*\"[^\"]*\"/\"${SSH_HOST_ALIAS}\": \"windows\"/" "$path"
     echo 'แก้แล้ว'
     return
   fi
@@ -500,7 +536,7 @@ ssh_lan_discover_server_ip() {
     ssh_lan_port_open "$ip" && { echo "$ip"; return 0; }
   done
   if [[ -n "$SSH_SERVER_HOST" ]] && ssh_lan_port_open "$SSH_SERVER_HOST" 2>/dev/null; then
-    getent hosts "$SSH_SERVER_HOST" 2>/dev/null | awk '{print $1; exit}'
+    resolve_host "$SSH_SERVER_HOST"
     return 0
   fi
   # nothing known answered: look at the whole local network and keep the host our key opens
@@ -554,7 +590,7 @@ fix_client_ssh_permissions() {
   for f in "$dir"/id_* "$dir"/*_ed25519 "$dir"/*_rsa; do
     [[ -f "$f" ]] || continue
     [[ "$f" == *.pub ]] && continue
-    mode=$(stat -c '%a' "$f" 2>/dev/null || echo '')
+    mode=$(stat -c '%a' "$f" 2>/dev/null || stat -f '%Lp' "$f" 2>/dev/null || echo '')
     if [[ -n "$mode" && "$mode" != '600' && "$mode" != '400' ]]; then
       _yellow "  แก้สิทธิ์ $(basename "$f") (${mode} → 600)"
     fi
@@ -593,17 +629,6 @@ ssh_lan_find_working_identity() {
   return 1
 }
 
-ssh_lan_pull_server_keys() {
-  local via="$1"
-  need_cmd scp
-  local dir="${HOME}/.ssh"
-  scp -o BatchMode=yes -o ConnectTimeout=20 -i "$via" -o IdentitiesOnly=yes \
-    "${SSH_SERVER_USER}@${SSH_SERVER_IP}:.ssh/${SSH_IDENTITY}" \
-    "${SSH_SERVER_USER}@${SSH_SERVER_IP}:.ssh/${SSH_IDENTITY}.pub" \
-    "$dir/" 2>/dev/null || return 1
-  fix_client_ssh_permissions
-  return 0
-}
 
 ssh_lan_push_server_pubkey() {
   local via="$1"
@@ -641,13 +666,10 @@ ensure_client_identity() {
   working=$(ssh_lan_find_working_identity || true)
 
   if [[ ! -f "$key" || ! -f "$pub" ]]; then
-    if [[ -n "$working" ]] && ssh_lan_pull_server_keys "$working"; then
-      _green "  ดึง ${SSH_IDENTITY} จากเซิร์ฟเวอร์แล้ว"
-    else
-      show_motion "สร้าง ${SSH_IDENTITY}" 500
-      ssh-keygen -q -t ed25519 -f "$key" -N '' -C "${USER}@$(hostname -s 2>/dev/null || hostname)-ssh-lan"
-      _green "  สร้างคู่กุญแจ ${SSH_IDENTITY}"
-    fi
+    # every machine makes its own key pair: a private key is never copied from another machine
+    show_motion "สร้าง ${SSH_IDENTITY}" 500
+    ssh-keygen -q -t ed25519 -f "$key" -N '' -C "${USER}@$(hostname -s 2>/dev/null || hostname)-ssh-lan"
+    _green "  สร้างคู่กุญแจ ${SSH_IDENTITY}"
     fix_client_ssh_permissions
   fi
 
@@ -713,16 +735,14 @@ EOF
     echo 'สร้างใหม่'
     return
   fi
-  if grep -qE "^Host[[:space:]]+${SSH_HOST_ALIAS}[[:space:]]*$" "$cfg"; then
+  if grep -qE "^Host[[:space:]]+${SSH_HOST_ALIAS}([[:space:]]|$)" "$cfg"; then
     backup_file "$cfg"
-    sed -i "s/^Host[[:space:]]\+${SSH_HOST_ALIAS}[[:space:]]*$/Host ${SSH_HOST_ALIAS} ${SSH_SERVER_IP}/" "$cfg"
-    echo 'ผูก IP แล้ว'
-    return
-  fi
-  if grep -qE "^Host[[:space:]]+${SSH_HOST_ALIAS}" "$cfg"; then
-    backup_file "$cfg"
-    sed -i "s/^Host[[:space:]]\\+${SSH_HOST_ALIAS}.*/Host ${SSH_HOST_ALIAS} ${SSH_SERVER_IP}/" "$cfg"
-    sed -i "0,/^[[:space:]]*HostName[[:space:]]/s/^[[:space:]]*HostName[[:space:]].*/  HostName ${SSH_SERVER_IP}/" "$cfg"
+    # POSIX awk, so it runs the same on Linux and macOS: new Host line, and the HostName inside this block only
+    awk -v a="$SSH_HOST_ALIAS" -v ip="$SSH_SERVER_IP" '
+      /^Host[ \t]/ { inb = ($2 == a); if (inb) { print "Host " a " " ip; next } }
+      inb && /^[ \t]*HostName[ \t]/ { print "  HostName " ip; next }
+      { print }' "$cfg" >"$cfg.tmp" && mv "$cfg.tmp" "$cfg"
+    chmod 600 "$cfg"
     echo "อัปเดต IP → ${SSH_SERVER_IP}"
     return
   fi
@@ -730,6 +750,137 @@ EOF
   printf '\n%s\n' "$block" >>"$cfg"
   chmod 600 "$cfg"
   echo 'เพิ่มแล้ว'
+}
+
+# --- pairing: put this machine's key on another machine (Windows, Linux or macOS) ---
+# Every machine keeps its own key pair. Only public keys travel; no private key is ever copied.
+
+# a public key line ends up inside a command on another machine: only known-safe characters pass
+valid_pub() {
+  local re='^(ssh-(ed25519|rsa)|ecdsa-sha2-nistp[0-9]{3}) [A-Za-z0-9+/=]+( [A-Za-z0-9@._-]+)?$'
+  [[ "$1" =~ $re ]]
+}
+
+own_key() {
+  local key="${HOME}/.ssh/${SSH_IDENTITY}"
+  mkdir -p "${HOME}/.ssh"; chmod 700 "${HOME}/.ssh"
+  [[ -f "$key.pub" ]] || ssh-keygen -q -t ed25519 -N '' -f "$key" -C "${USER}@$(hostname -s 2>/dev/null || hostname)-ssh-lan"
+  echo "$key"
+}
+
+# PowerShell's -EncodedCommand takes UTF-16LE base64, so no quoting survives the trip through cmd.exe
+b64_utf16() { printf '%s' "$1" | iconv -f UTF-8 -t UTF-16LE | base64 | tr -d '\n'; }
+
+win_push_script() {
+  sed "s|__KEY__|$1|" <<'PS'
+$ProgressPreference='SilentlyContinue'; $k='__KEY__'; $adm=([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole('Administrators')
+$f=if($adm){Join-Path $env:ProgramData 'ssh\administrators_authorized_keys'}else{Join-Path $env:USERPROFILE '.ssh\authorized_keys'}
+New-Item -Force -ItemType Directory (Split-Path $f)|Out-Null
+if(-not(Test-Path $f) -or -not(Select-String -LiteralPath $f -SimpleMatch -Quiet $k)){Add-Content -LiteralPath $f -Value $k -Encoding ascii}
+if($adm){icacls $f /inheritance:r /grant 'Administrators:F' /grant 'SYSTEM:F'|Out-Null}
+PS
+}
+
+win_fetch_script() {
+  sed "s|__LEAF__|$1|" <<'PS'
+$ProgressPreference='SilentlyContinue'; $k=Join-Path $env:USERPROFILE '.ssh\__LEAF__'
+if(-not(Test-Path "$k.pub")){New-Item -Force -ItemType Directory (Split-Path $k)|Out-Null; Start-Process ssh-keygen -ArgumentList "-q -t ed25519 -N `"`" -f `"$k`"" -NoNewWindow -Wait}
+Get-Content "$k.pub" -TotalCount 1
+PS
+}
+
+# one Host block per paired machine in ~/.ssh/config, replaced when it is already there
+add_host_entry() {
+  local alias="$1" host="$2" user="$3" key="$4" cfg="${HOME}/.ssh/config" tmp
+  touch "$cfg"; chmod 600 "$cfg"; backup_file "$cfg"
+  tmp=$(mktemp)
+  awk -v a="$alias" '/^Host[ \t]/ { skip = ($2 == a && NF == 2) } !skip { print }' "$cfg" >"$tmp"
+  {
+    cat "$tmp"
+    printf '\nHost %s\n  HostName %s\n  User %s\n  IdentityFile ~/.ssh/%s\n  IdentitiesOnly yes\n  StrictHostKeyChecking accept-new\n' "$alias" "$host" "$user" "$(basename "$key")"
+  } >"$cfg"
+  rm -f "$tmp"; chmod 600 "$cfg"
+}
+
+pair_list_hosts() {
+  echo '  กำลังสแกนหาเครื่องที่เปิดพอร์ต 22 ในวง LAN...'
+  local found; found=$(sweep_ssh_hosts | sort -u)
+  if [[ -z "$found" ]]; then _yellow '  ไม่พบเครื่องที่เปิดรับ SSH'; return 0; fi
+  echo "$found" | sed 's/^/  พบ /'
+  _gray '  จับคู่: ./ssh-lan.sh pair --target ผู้ใช้@IP [--both]'
+}
+
+# menu entry: ask for the target (empty = list what answers on port 22), then pair
+pair_prompt() {
+  read -r -p '  ผู้ใช้@IP ของเครื่องที่จะจับคู่ (ว่าง = สแกนหาเครื่อง): ' PAIR_TARGET
+  PAIR_BOTH=0
+  if [[ -n "$PAIR_TARGET" ]]; then
+    read -r -p '  ให้เครื่องนั้นเข้ามาหาเครื่องนี้ด้วยไหม [y/N] ' r
+    [[ "$r" =~ ^[yY] ]] && PAIR_BOTH=1
+  fi
+  cmd_pair
+}
+
+cmd_pair() {
+  need_cmd ssh; need_cmd ssh-keygen; need_cmd ssh-keyscan
+  local target="$PAIR_TARGET" user="$PAIR_USER"
+  [[ -n "$target" ]] || { pair_list_hosts; return 0; }
+  if [[ "$target" == *@* ]]; then user="${target%@*}"; target="${target#*@}"; fi
+  [[ "$target" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]] || { _red '  ชื่อหรือ IP ของเครื่องปลายทางไม่ถูกต้อง'; return 1; }
+  [[ -n "$user" ]] || user="$SSH_SERVER_USER"
+  [[ "$user" =~ ^[A-Za-z0-9._-]+$ ]] || { _red '  ชื่อผู้ใช้ของเครื่องปลายทางไม่ถูกต้อง'; return 1; }
+  [[ -z "$PAIR_ALIAS" || "$PAIR_ALIAS" =~ ^[A-Za-z0-9._-]+$ ]] || { _red '  ชื่อเรียก (alias) ใช้ได้เฉพาะ a-z 0-9 . _ -'; return 1; }
+  ssh_lan_port_open "$target" || { _red "  เครื่อง $target ไม่ตอบที่พอร์ต 22 — เปิดรับ SSH บนเครื่องนั้นก่อน"; return 1; }
+
+  local key pub; key=$(own_key); pub=$(head -n1 "$key.pub")
+  valid_pub "$pub" || { _red '  รูปแบบ public key ไม่ถูกต้อง'; return 1; }
+
+  # the server's own banner tells Windows (OpenSSH_for_Windows) from Linux and macOS, which take the same commands
+  local windows=0 remote
+  if ssh-keyscan -T 3 "$target" 2>&1 | grep -qi 'for_windows'; then windows=1; fi
+  if [[ $windows -eq 1 ]]; then
+    echo '  เครื่องปลายทาง: Windows'
+    remote="powershell -NoProfile -EncodedCommand $(b64_utf16 "$(win_push_script "$pub")")"
+  else
+    echo '  เครื่องปลายทาง: Linux / macOS'
+    remote="umask 077; mkdir -p ~/.ssh; touch ~/.ssh/authorized_keys; grep -qxF '$pub' ~/.ssh/authorized_keys || echo '$pub' >> ~/.ssh/authorized_keys"
+  fi
+
+  echo '  ใส่รหัสผ่านของเครื่องปลายทางเมื่อถูกถาม (สคริปต์นี้ไม่เห็นรหัสผ่าน)'
+  if ! ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 "$user@$target" "$remote"; then
+    _red '  ใส่กุญแจที่เครื่องปลายทางไม่สำเร็จ — ตรวจชื่อผู้ใช้/รหัสผ่าน และดูว่าเครื่องนั้นยังเปิดให้ล็อกอินด้วยรหัสผ่านอยู่'
+    return 1
+  fi
+
+  # prove it: the key alone must open the door now
+  local common=(-o BatchMode=yes -o ConnectTimeout=8 -o IdentitiesOnly=yes -i "$key" "$user@$target") name
+  if ! name=$(ssh "${common[@]}" hostname 2>/dev/null | head -n1 | tr -d '\r'); then
+    _red '  ใส่กุญแจแล้ว แต่ยังเข้าด้วยกุญแจไม่ได้ — เครื่องปลายทางอาจไม่ยอมรับ public key'
+    return 1
+  fi
+  local alias="$PAIR_ALIAS"
+  [[ -n "$alias" ]] || alias=$(printf '%s' "$name" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9\n-' '-' | sed 's/^-*//;s/-*$//')
+  [[ -n "$alias" ]] || alias="$target"
+  add_host_entry "$alias" "$target" "$user" "$key"
+  _green "  [✓] จับคู่สำเร็จ: เครื่องนี้เข้า $target ได้แล้ว ลอง  ssh $alias"
+
+  [[ "$PAIR_BOTH" == '1' ]] || return 0
+
+  # the other way round: take the target's PUBLIC key (made there if it has none) and allow it here
+  local leaf fetch theirs; leaf=$(basename "$key")
+  if [[ $windows -eq 1 ]]; then
+    fetch="powershell -NoProfile -EncodedCommand $(b64_utf16 "$(win_fetch_script "$leaf")")"
+  else
+    fetch="mkdir -p ~/.ssh; test -f ~/.ssh/$leaf.pub || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/$leaf; head -n1 ~/.ssh/$leaf.pub"
+  fi
+  theirs=$(ssh "${common[@]}" "$fetch" 2>/dev/null | head -n1 | tr -d '\r')
+  valid_pub "$theirs" || { _red '  ดึง public key ของเครื่องปลายทางไม่สำเร็จ'; return 1; }
+  if ! is_server; then
+    _yellow '  [!] เครื่องนี้ยังไม่เปิดรับ SSH จึงยังให้เครื่องนั้นเข้ามาไม่ได้ (เปิด sshd / Remote Login แล้วจับคู่อีกครั้ง)'
+    return 0
+  fi
+  add_key_line "${HOME}/.ssh/authorized_keys" "$theirs" || true
+  _green "  [✓] เครื่องนั้นเข้าเครื่องนี้ได้แล้ว: ที่เครื่องนั้นพิมพ์  ssh ${USER}@$(lan_ips | head -n1)"
 }
 
 repair_client() {
@@ -821,9 +972,11 @@ show_menu() {
     _yellow '  [2]  ใส่กุญแจบนเครื่องนี้อีกครั้ง (ไม่บังคับ)'
     _cyan '  [3]  ดูสถานะ'
     _red '  [4]  ถอน'
+    _cyan '  [5]  จับคู่กับเครื่องอื่น'
   else
     _gray '       ตั้ง Windows, จัด SSH, ทดสอบเข้า เซิร์ฟเวอร์'
     _cyan '  [2]  ทดสอบเชื่อมต่ออีกครั้ง'
+    _cyan '  [3]  จับคู่กับเครื่องอื่น'
   fi
   _gray '  [0]  ออก'
   echo
@@ -842,6 +995,7 @@ start_tui() {
         2) cmd_add_client; pause ;;
         3) cmd_status; pause ;;
         4) start_disable; pause ;;
+        5) pair_prompt; pause ;;
         0) exit 0 ;;
         *) _yellow '  กดหมายเลขในเมนู'; sleep 0.6 ;;
       esac
@@ -849,6 +1003,7 @@ start_tui() {
       case "$c" in
         1) repair_client; pause ;;
         2) show_fill 'ทดสอบ'; ssh_lan_connect_test 2>&1 || _yellow '  ทดสอบไม่ผ่าน — รัน [1] หรือตรวจกุญแจบน เซิร์ฟเวอร์'; pause ;;
+        3) pair_prompt; pause ;;
         0) exit 0 ;;
         *) _yellow '  กดหมายเลขในเมนู'; sleep 0.6 ;;
       esac
@@ -863,10 +1018,11 @@ case "$ACTION" in
   status) cmd_status ;;
   add-client) cmd_add_client ;;
   harden)
-    [[ -n "$SUBNET" ]] || { _red '  ต้องระบุ --subnet เช่น 192.168.1.0/24'; exit 1; }
+    [[ -n "$SUBNET" ]] || { _red '  ต้องระบุ --subnet เช่น 192.0.2.0/24'; exit 1; }
     cmd_harden
     ;;
   remove) cmd_remove ;;
   client) repair_client ;;
+  pair) cmd_pair ;;
   *) _red "Unknown action: $ACTION"; exit 2 ;;
 esac

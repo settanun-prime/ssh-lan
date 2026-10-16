@@ -40,7 +40,7 @@ function New-Brush([string]$Hex) { (New-Object System.Windows.Media.BrushConvert
 
 # lets a blocking task paint its log lines and busy bar while it is still running
 function Update-Ui {
-    $window.Dispatcher.Invoke([System.Action]{}, [System.Windows.Threading.DispatcherPriority]::Render)
+    $window.Dispatcher.Invoke([System.Action]{}, [System.Windows.Threading.DispatcherPriority]::Background)
 }
 
 function Add-Log([string]$Line) {
@@ -374,6 +374,16 @@ if ($btnAddClient) {
         Add-Log 'กำลังคืนเป็นเลข IP อัตโนมัติ (DHCP)...'
         & (Join-Path $PSScriptRoot 'ssh-lan\set-lan-ip.ps1') -Dhcp
         Add-Log ' [✓] คืนเป็น IP อัตโนมัติแล้ว'
+    }
+})
+
+(Find 'BtnPair').Add_Click({
+    $target = (Find 'PairBox').Text.Trim()
+    $both = [bool](Find 'PairBoth').IsChecked
+    Invoke-Logged {
+        if (-not $target) { Show-SshLanFoundHosts; return }
+        Add-Log "กำลังจับคู่กับ $target ..."
+        Invoke-SshLanPair -Target $target -Both:$both
     }
 })
 
