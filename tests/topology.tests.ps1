@@ -183,6 +183,25 @@ Assert-equal $e4.Dir 'out' 'one-way hop toward the host'
 Assert-True (-not $e4.Live) 'no session now: not live'
 Assert-True (-not @($l.Edges | Where-Object { $_.Ssh -and $_.Style -ne 'ssh' })) 'with this PC on the map the router cable stays a plain cable'
 Assert-True (-not @($se | ForEach-Object { $_.Points } | Where-Object { $_[1] -gt $l.Height })) 'SSH lines stay inside the map'
+# every edge says what measures it: a key, whether both ends are up, and (for SSH with this PC) the address on the other end
+$devs[3].Online = $false
+$m = Get-SshLanTopologyModel $devs $null @() @{} $null $ssh
+$l = Get-SshLanTopologyLayout $m 'link'
+$keys = @($l.Edges | ForEach-Object { [string]$_.FlowKey })
+Assert-True (-not @($keys | Where-Object { -not $_ })) 'every edge has a FlowKey'
+Assert-Equal @($keys | Select-Object -Unique).Count $keys.Count 'FlowKeys are unique'
+Assert-True (@($l.Edges | Where-Object { $_.FlowKey -eq 'internet' }).Count -eq 1) 'the internet line'
+Assert-True (@($l.Edges | Where-Object { $_.FlowKey -eq 'nic' -and $_.To -eq $devs[1].Mac }).Count -eq 1) 'the cable to this PC is the nic line'
+Assert-True (@($l.Edges | Where-Object { $_.FlowKey -eq "lan:$($devs[2].Mac)" }).Count -eq 1) 'other cables are lan lines'
+Assert-Equal @($l.Edges | Where-Object { $_.FlowKey -eq "lan:$($devs[3].Mac)" })[0].Online $false 'an offline device: its cable is not online'
+Assert-Equal @($l.Edges | Where-Object { $_.FlowKey -eq "lan:$($devs[2].Mac)" })[0].Online $true 'an online device: its cable is'
+$sx = @($l.Edges | Where-Object { $_.Style -eq 'ssh' })
+$toOff = @($sx | Where-Object { $_.From -eq $devs[3].Mac -or $_.To -eq $devs[3].Mac })[0]
+Assert-Equal $toOff.Online $false 'ssh line to an offline machine is not online'
+$toOn = @($sx | Where-Object { $_.From -eq $devs[2].Mac -or $_.To -eq $devs[2].Mac })[0]
+Assert-Equal $toOn.Online $true 'ssh line between online machines is'
+Assert-Equal $toOn.PeerIp $devs[2].Ip 'ssh line with this PC carries the other end address'
+Assert-True ($toOn.FlowKey -like 'ssh:*>*') 'ssh flow key names both ends'
 
 # peer SSH (.40 -> .200) comes from the audited host's sshd log, not a manual mark
 $peerDevs = @(New-TestDevices 4)

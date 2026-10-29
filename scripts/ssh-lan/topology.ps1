@@ -357,7 +357,9 @@ function Get-SshLanTopologyLayout($Model, [string]$View = '', [string]$GroupBy =
         }
         $router = $Model.Router
         if ($router) { $place.Add(@{ Key = $router.Key; X = $hub.X; Y = $hub.Y; W = $nw; H = $nh }) }
+        # FlowKey / Online / PeerIp: what measures the line (traffic.ps1), whether both ends are up, the address across a line that touches this PC
         $edges.Add(@{ From = 'internet'; To = $(if ($router) { $router.Key } else { 'router' }); Style = 'internet'
+                      FlowKey = 'internet'; Online = $true; PeerIp = ''
                       X1 = $anchors.internet.X + 120; Y1 = $anchors.internet.Y + 28; X2 = $hub.X; Y2 = $hub.Y + $nh / 2
                       Points = @(@(($anchors.internet.X + 120), ($anchors.internet.Y + 28)), @($hub.X, ($hub.Y + $nh / 2))) })
         $rest = @($lan | Where-Object { -not $_.IsRouter })
@@ -382,7 +384,7 @@ function Get-SshLanTopologyLayout($Model, [string]$View = '', [string]$GroupBy =
                 $ncx = $xs[$c]
                 $place.Add(@{ Key = $n.Key; X = $ncx - $nw / 2; Y = $y; W = $nw; H = $nh })
                 $edges.Add(@{ From = $(if ($router) { $router.Key } else { 'router' }); To = $n.Key; Style = $n.Link; Ssh = $n.Paired -and $n.Online -and -not $hasSelf
-                              Online = [bool]$n.Online
+                              Online = [bool]$n.Online; PeerIp = ''; FlowKey = $(if ($n.IsSelf) { 'nic' } else { "lan:$($n.Key)" })
                               X1 = $ncx; Y1 = $bus; X2 = $ncx; Y2 = $y
                               Points = @(@($cx, $hubBottom), @($cx, $bus), @($ncx, $bus), @($ncx, $y)) })
             }
@@ -391,6 +393,7 @@ function Get-SshLanTopologyLayout($Model, [string]$View = '', [string]$GroupBy =
         # shortcut: a line between rows can cross a device in the row between; route around it if maps grow past two rows
         $at = @{}; foreach ($p in $place) { $at[[string]$p.Key] = $p }
         $byIp = @{}; foreach ($n in $rest) { if ($n.Ip) { $byIp[[string]$n.Ip] = $n } }
+        $nodeBy = @{}; foreach ($n in $rest) { $nodeBy[[string]$n.Key] = $n }
         $me = @($rest | Where-Object { $_.IsSelf })[0]
         # directed hops FromKey -> ToKey; later collapsed to one drawn edge with Dir
         $hop = @{}
@@ -435,9 +438,12 @@ function Get-SshLanTopologyLayout($Model, [string]$View = '', [string]$GroupBy =
             $live = [bool]($hop["$a>$b"] -or $hop["$b>$a"])
             $s = $at[$from]; $t = $at[$to]
             if (-not $s -or -not $t) { continue }
+            $nf = $nodeBy[$from]; $nt = $nodeBy[$to]
+            $peerIp = if ($me -and $from -eq $me.Key) { [string]$nt.Ip } elseif ($me -and $to -eq $me.Key) { [string]$nf.Ip } else { '' }
             $lane = [Math]::Max($s.Y, $t.Y) + $nh + 10 + 6 * ($i % 5)
             $sx = $s.X + 20 + 16 * ($i % 5); $tx = $t.X + $nw / 2
             $edges.Add(@{ From = $from; To = $to; Style = 'ssh'; Ssh = $false; Live = $live; Dir = $dir
+                          FlowKey = "ssh:$from>$to"; Online = [bool]($nf.Online -and $nt.Online); PeerIp = $peerIp
                           X1 = $sx; Y1 = $s.Y + $nh; X2 = $tx; Y2 = $t.Y + $nh
                           Points = @(@($sx, ($s.Y + $nh)), @($sx, $lane), @($tx, $lane), @($tx, ($t.Y + $nh))) })
             $i++
