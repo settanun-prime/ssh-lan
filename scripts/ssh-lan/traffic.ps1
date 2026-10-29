@@ -28,7 +28,16 @@ function Get-SshLanFlowState($Edge, $Prev, $Cur, [datetime]$Now = (Get-Date)) {
     # a sample older than 10 s (sampler stopped, tab hidden, reads failing) is not a measurement: nothing keeps running on it
     $stale = [bool]($Cur -and ($Now - [datetime]$Cur.Time).TotalSeconds -gt 10)
     if ($Edge.Online -eq $false) { return & $r 'offline' 'ออฟไลน์' $null $null $false }
-    if ($key -eq 'internet') { return & $r 'unknown' 'วัดไม่ได้: router ไม่ตอบ UPnP' $null $null $false }
+    # the internet line: a ping says up or down (Net), never a byte count, so it stays still either way
+    if ($key -eq 'internet') {
+        if ($Cur -and -not $stale -and $Cur.Net) {
+            $s = if ($Cur.Net.Up) { & $r 'unknown' "ออกอินเทอร์เน็ตได้ · ping $($Cur.Net.Target) $($Cur.Net.Ms) ms · ไม่มีจุดวิ่ง: router ไม่ตอบ UPnP" $null $null $false }
+                 else { & $r 'unknown' "ออกอินเทอร์เน็ตไม่ได้: ping $($Cur.Net.Target) ไม่ตอบ" $null $null $false }
+            $s.Net = $(if ($Cur.Net.Up) { 'up' } else { 'down' })
+            return $s
+        }
+        return & $r 'unknown' 'วัดไม่ได้: router ไม่ตอบ UPnP' $null $null $false
+    }
     if ($key -like 'lan:*') { return & $r 'unknown' 'วัดไม่ได้: ไม่มี SNMP' $null $null $false }
     if ($key -like 'ssh:*') {
         if (-not [string]$Edge.PeerIp) { return & $r 'unknown' 'วัดสดไม่ได้: ใช้หลักฐานจาก audit' $null $null $false }
@@ -98,7 +107,18 @@ function Get-SshLanLivePeers([object[]]$Connections, [int[]]$Ports, [string[]]$S
     return $peers.ToArray()
 }
 
-# one sample: NIC counters, SSH sessions open now, Tailscale peer counters. Slow readers (netstat, tailscale.exe) belong in a runspace
+# can this PC reach the internet: the first public resolver that answers a ping (worst case both time out: 1 s, inside the 2 s read guard)
+function Get-SshLanInternetReach([string[]]$Targets = @('1.1.1.1', '8.8.8.8'), [int]$TimeoutMs = 500) {
+    $p = New-Object Net.NetworkInformation.Ping
+    try {
+        foreach ($t in $Targets) {
+            try { $a = $p.Send($t, $TimeoutMs); if ($a.Status -eq 'Success') { return @{ Up = $true; Ms = [int]$a.RoundtripTime; Target = $t } } } catch { }
+        }
+    } finally { $p.Dispose() }
+    return @{ Up = $false; Ms = $null; Target = ($Targets -join ', ') }
+}
+
+# one sample: NIC counters, SSH sessions open now, Tailscale peer counters, internet ping. Slow readers (netstat, tailscale.exe) belong in a runspace
 function Read-SshLanTrafficSample([string]$LanIp, [string]$TailscaleExe = (Get-SshLanTailscaleExe)) {
     $nic = Get-SshLanNicCounters $LanIp
     $ports = @(22)
@@ -109,7 +129,7 @@ function Read-SshLanTrafficSample([string]$LanIp, [string]$TailscaleExe = (Get-S
     if ($TailscaleExe) { try { $ts = ConvertFrom-SshLanTailscaleCounters ((& $TailscaleExe status --json 2>$null) | Out-String) } catch { } }
     return @{
         Time = Get-Date; NicId = $(if ($nic) { $nic.Id } else { $null }); NicRx = $(if ($nic) { $nic.Rx } else { $null }); NicTx = $(if ($nic) { $nic.Tx } else { $null })
-        SshLive = @(Get-SshLanLivePeers $conns ($ports | Select-Object -Unique) $selfIps); Ts = $ts
+        SshLive = @(Get-SshLanLivePeers $conns ($ports | Select-Object -Unique) $selfIps); Ts = $ts; Net = (Get-SshLanInternetReach)
     }
 }
 
@@ -117,5 +137,5 @@ function Read-SshLanTrafficSample([string]$LanIp, [string]$TailscaleExe = (Get-S
 function Get-SshLanFlowSig($State) {
     $rx = ConvertTo-SshLanDotSpec ([double]$State.RxBps)
     $tx = ConvertTo-SshLanDotSpec ([double]$State.TxBps)
-    return "$($State.State)|$([bool]$State.Fixed)|$($rx.Dots):$([int]($rx.Ms / 400))|$($tx.Dots):$([int]($tx.Ms / 400))"
+    return "$($State.State)|$($State.Net)|$([bool]$State.Fixed)|$($rx.Dots):$([int]($rx.Ms / 400))|$($tx.Dots):$([int]($tx.Ms / 400))"
 }

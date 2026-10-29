@@ -138,6 +138,9 @@ function Set-MapEdgeFlow([string]$FlowKey, $State) {
         if ($f.Dash) { $l.StrokeDashArray = [Windows.Media.DoubleCollection]::Parse($f.Dash) } else { $l.ClearValue([Windows.Shapes.Shape]::StrokeDashArrayProperty) }
         $l.Opacity = $f.Opacity
     }
+    # the internet line has a ping, not a counter: green = got out, red dashed = did not, grey = no result
+    $l.Stroke = New-MapBrush $(switch ([string]$State.Net) { 'up' { '#4ADE80' } 'down' { '#F87171' } default { $f.Color } })
+    if ($State.Net -eq 'down') { $l.StrokeDashArray = [Windows.Media.DoubleCollection]::Parse('6,4') }
     if ($kind -ne 'flow' -or -not (Test-MapMotion)) { return }
     $runs = @()
     if ($State.Fixed) {

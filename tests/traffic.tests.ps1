@@ -45,6 +45,19 @@ Assert-True ($lan.Why -match 'SNMP') 'and says why'
 $net = FS @{ FlowKey = 'internet'; Online = $true; PeerIp = '' } $prev (New-Sample 2 5 5)
 Assert-Equal $net.State 'unknown' 'the internet line cannot be measured'
 Assert-True ($net.Why -match 'UPnP') 'and says why'
+# the internet line: a real ping says up or down; still no dots, it is not a traffic count
+$inet = @{ FlowKey = 'internet'; Online = $true; PeerIp = '' }
+$up = New-Sample 2 5 5; $up.Net = @{ Up = $true; Ms = 14; Target = '192.0.2.53' }
+$st = FS $inet $prev $up
+Assert-Equal $st.Net 'up' 'a ping answer marks the internet up'
+Assert-Equal $st.State 'unknown' 'up is still not a traffic count (no dots)'
+Assert-True ($st.Why -match '14 ms' -and $st.Why -match 'UPnP') 'says the ping time and why there are no dots'
+$down = New-Sample 2 5 5; $down.Net = @{ Up = $false; Ms = $null; Target = '192.0.2.53' }
+$st = FS $inet $prev $down
+Assert-Equal $st.Net 'down' 'no ping answer marks the internet down'
+Assert-True ($st.Why -match 'ไม่ได้') 'and says it cannot get out'
+Assert-Equal (Get-SshLanFlowState $inet $prev $up $up.Time.AddSeconds(30)).Net $null 'an old ping is not up or down'
+Assert-True ((Get-SshLanFlowSig (FS $inet $prev $up)) -ne (Get-SshLanFlowSig (FS $inet $prev $down))) 'up to down redraws the line'
 Assert-Equal (FS @{ FlowKey = 'lan:x'; Online = $false; PeerIp = '' } $prev (New-Sample 2 5 5)).State 'offline' 'offline cable'
 $sshOff = @{ FlowKey = 'ssh:a>b'; Online = $false; PeerIp = '10.0.0.5' }
 Assert-Equal (FS $sshOff $prev (New-Sample 2 5 5 '10.0.0.5')).State 'offline' 'offline beats live ssh'
@@ -108,3 +121,5 @@ Assert-Equal (Get-SshLanFlowState $ssh $prev (New-Sample 2 5 5 '10.0.0.5') $cur.
 Assert-Equal (Get-SshLanFlowState $nic $prev $cur $cur.Time.AddSeconds(5)).State 'flow' 'five seconds old is still fine'
 Assert-True ((Get-SshLanNicCounters '127.0.0.1').Id) 'the adapter id comes with the counters'
 Assert-True ($real.NicId) 'a real sample names its adapter'
+Assert-True ($real.Net -and $real.Net.Up -is [bool]) 'a real sample says whether the internet answered'
+Assert-Equal (Get-SshLanInternetReach @('192.0.2.1') 200).Up $false 'an address nobody answers is down'

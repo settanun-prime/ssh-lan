@@ -46,6 +46,18 @@ Set-MapEdgeFlow 'nic' (& $flow 5000 0)
 Assert-Equal $script:MapFlow['nic'].Line.Opacity 1 'a measured edge is drawn at full strength'
 Assert-Equal (Get-Dots).Count 1 'dots only for the measured edge: 5 KB/s is one dot'
 Set-MapEdgeFlow 'nope' (& $flow 1 1)
+# the internet line: green when a ping got out, red dashed when not, its own grey when nothing says; never dots
+Add-MapEdge (New-TestEdge 'internet' 'internet' $true) 0 $false
+$il = $script:MapFlow['internet'].Line
+$before = (Get-Dots).Count
+Set-MapEdgeFlow 'internet' @{ State = 'unknown'; Net = 'up'; RxBps = $null; TxBps = $null; Fixed = $false; Why = 'x' }
+Assert-Equal $il.Stroke.Color.ToString() '#FF4ADE80' 'internet up: green'
+Assert-Equal (Get-Dots).Count $before 'internet up: still no dots (a ping is not traffic)'
+Set-MapEdgeFlow 'internet' @{ State = 'unknown'; Net = 'down'; RxBps = $null; TxBps = $null; Fixed = $false; Why = 'x' }
+Assert-Equal $il.Stroke.Color.ToString() '#FFF87171' 'internet down: red'
+Assert-True ($il.StrokeDashArray.Count -gt 0) 'internet down: dashed'
+Set-MapEdgeFlow 'internet' @{ State = 'unknown'; RxBps = $null; TxBps = $null; Fixed = $false; Why = 'x' }
+Assert-Equal $il.Stroke.Color.ToString() '#FF6B7487' 'no ping result: back to its own grey'
 
 # --- what a node says about its traffic (card on hover and side panel) ---
 $t0 = Get-Date '2026-10-29T10:00:00'
