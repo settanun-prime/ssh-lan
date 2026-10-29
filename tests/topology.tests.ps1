@@ -170,17 +170,30 @@ $ssh = @{ In = @{ $devs[2].Ip = [datetime]'2026-10-29T07:00:00'; $devs[4].Ip = [
 $m = Get-SshLanTopologyModel $devs $null @() @{} $null $ssh
 $l = Get-SshLanTopologyLayout $m 'link'
 $se = @($l.Edges | Where-Object { $_.Style -eq 'ssh' })
-Assert-Equal $se.Count 3 'one SSH line per machine that talks SSH with this PC'
-$e2 = @($se | Where-Object { $_.To -eq $devs[2].Mac })[0]
-Assert-Equal $e2.From $devs[1].Mac 'the line starts at this PC'
-Assert-Equal $e2.Dir 'both' 'paired here and logged in here: both ways'
+Assert-equal $se.Count 3 'one SSH line per machine that talks SSH with this PC'
+$e2 = @($se | Where-Object { ($_.From -eq $devs[1].Mac -and $_.To -eq $devs[2].Mac) -or ($_.From -eq $devs[2].Mac -and $_.To -eq $devs[1].Mac) })[0]
+Assert-True $e2 'SSH line between this PC and the paired+login machine'
+Assert-equal $e2.Dir 'both' 'paired here and logged in here: both ways'
 Assert-True $e2.Live 'an open session makes it live'
-Assert-Equal @($se | Where-Object { $_.To -eq $devs[3].Mac })[0].Dir 'out' 'paired only: this PC to it'
-$e4 = @($se | Where-Object { $_.To -eq $devs[4].Mac })[0]
-Assert-Equal $e4.Dir 'in' 'logged in here only: it to this PC'
+Assert-equal @($se | Where-Object { ($_.From -eq $devs[1].Mac -and $_.To -eq $devs[3].Mac) -or ($_.From -eq $devs[3].Mac -and $_.To -eq $devs[1].Mac) })[0].Dir 'out' 'paired only: this PC to it'
+$e4 = @($se | Where-Object { ($_.From -eq $devs[1].Mac -and $_.To -eq $devs[4].Mac) -or ($_.From -eq $devs[4].Mac -and $_.To -eq $devs[1].Mac) })[0]
+Assert-equal $e4.From $devs[4].Mac 'login-only: line drawn from the guest'
+Assert-equal $e4.To $devs[1].Mac 'login-only: arrow into this PC'
+Assert-equal $e4.Dir 'out' 'one-way hop toward the host'
 Assert-True (-not $e4.Live) 'no session now: not live'
 Assert-True (-not @($l.Edges | Where-Object { $_.Ssh -and $_.Style -ne 'ssh' })) 'with this PC on the map the router cable stays a plain cable'
 Assert-True (-not @($se | ForEach-Object { $_.Points } | Where-Object { $_[1] -gt $l.Height })) 'SSH lines stay inside the map'
+
+# peer SSH (.40 -> .200) comes from the audited host's sshd log, not a manual mark
+$peerDevs = @(New-TestDevices 4)
+$peerDevs[0].Note = 'เราเตอร์'; $peerDevs[1].Note = 'เครื่องนี้'
+$peerAudit = [pscustomobject]@{ Machines = @([pscustomobject]@{ Ip = $peerDevs[3].Ip; Color = 'green'; SshIn = @($peerDevs[2].Ip); SshOut = @(); SshLiveIn = @(); SshLiveOut = @() }); Findings = @() }
+$pm = Get-SshLanTopologyModel $peerDevs $peerAudit @() @{} $null @{ In = @{}; LiveIn = @(); LiveOut = @() }
+$pl = Get-SshLanTopologyLayout $pm 'link'
+$peerEdge = @($pl.Edges | Where-Object { $_.Style -eq 'ssh' -and (($_.From -eq $peerDevs[2].Mac -and $_.To -eq $peerDevs[3].Mac) -or ($_.From -eq $peerDevs[3].Mac -and $_.To -eq $peerDevs[2].Mac)) })[0]
+Assert-True $peerEdge 'audit SshIn draws SSH between two other machines'
+Assert-equal $peerEdge.From $peerDevs[2].Mac 'guest (.40) is the from end'
+Assert-equal $peerEdge.To $peerDevs[3].Mac 'host (.200) is the to end'
 
 # --- the user's kind is kept in devices.json and survives a model rebuild ---
 $old = $env:SSH_LAN_DATA_DIR

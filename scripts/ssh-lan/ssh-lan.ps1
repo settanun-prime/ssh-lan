@@ -929,8 +929,13 @@ function Resolve-SshLanPair([string]$Ip, [int[]]$Ports, [string]$Mac, [object[]]
         if ($p) { return [pscustomobject]@{ Pair = $p; Moved = ($p.HostName -ne $Ip) } }
     }
     $p = $Paired[$Ip]
-    # bound to a MAC seen lately = that machine owns the name; a binding gone quiet for a day yields (machine replaced)
-    if (-not $p -or @($Known | Where-Object { $_.PairAlias -eq $p.Alias -and $_.Mac -and (Test-SshLanRecentlySeen ([string]$_.LastSeen)) }).Count) { return $null }
+    if (-not $p) { return $null }
+    # another MAC still holds this alias on a *different* IP → do not steal. Same IP + new MAC (NIC/ARP) may reclaim.
+    $heldElsewhere = @($Known | Where-Object {
+        $_.PairAlias -eq $p.Alias -and $_.Mac -and $_.Mac -ne $Mac -and $_.Ip -and $_.Ip -ne $Ip -and
+        (Test-SshLanRecentlySeen ([string]$_.LastSeen))
+    }).Count
+    if ($heldElsewhere) { return $null }
     if ($Ports -contains $p.Port) { return [pscustomobject]@{ Pair = $p; Moved = $false } }
     return $null
 }

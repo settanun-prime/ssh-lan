@@ -75,7 +75,7 @@ Assert-Equal (Get-SshLanPortExposure 3389 'svchost' $svcRule '0.0.0.0' @('Dnscac
 
 # real machine, read-only: shape only
 $f = Get-SshLanWindowsFacts
-foreach ($k in 'machine', 'ip', 'member', 'os', 'profile', 'firewallOn', 'listeners', 'sshdPassword', 'smb1', 'rdp', 'chassis', 'media', 'tempRules') { Assert-True $f.ContainsKey($k) "facts.$k" }
+foreach ($k in 'machine', 'ip', 'member', 'os', 'profile', 'firewallOn', 'listeners', 'sshdPassword', 'smb1', 'rdp', 'chassis', 'media', 'tempRules', 'sshOut', 'sshIn', 'sshLiveIn', 'sshLiveOut') { Assert-True $f.ContainsKey($k) "facts.$k" }
 Assert-True (@($f.listeners).Count -gt 0) 'this PC listens on something'
 Assert-True (@($f.listeners | Where-Object { -not $_.process }).Count -eq 0) 'every listener has a process name'
 Assert-True (@($f.listeners | Where-Object { $_.exposure -notin 'any', 'lan', 'tailscale', 'blocked', 'local' }).Count -eq 0) 'exposure values'

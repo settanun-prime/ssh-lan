@@ -78,7 +78,9 @@ Assert-Equal (Resolve-SshLanPair '10.9.8.20' @(22) $macA @() $paired).Pair.Alias
 Assert-Equal (Resolve-SshLanPair '10.9.8.20' @(80) $macX @() $paired) $null 'never bound, no SSH there: another device took the address, no name'
 Assert-Equal (Resolve-SshLanPair '10.9.8.30' @(8021) $macA @() $paired).Pair.Alias 'phone-b' 'the alias own port counts'
 $known = @([pscustomobject]@{ Ip = '10.9.8.20'; Mac = $macA; PairAlias = 'box-a'; LastSeen = (Get-Date).ToString('o') })
-Assert-Equal (Resolve-SshLanPair '10.9.8.20' @(22) $macX $known $paired) $null 'bound to another MAC: SSH open is not enough'
+Assert-equal (Resolve-SshLanPair '10.9.8.20' @(22) $macX $known $paired).Pair.Alias 'box-a' 'same IP, new MAC answering SSH: alias stays on the address (NIC/ARP churn)'
+$heldElse = @([pscustomobject]@{ Ip = '10.9.8.21'; Mac = $macA; PairAlias = 'box-a'; LastSeen = (Get-Date).ToString('o') })
+Assert-equal (Resolve-SshLanPair '10.9.8.20' @(22) $macX $heldElse $paired) $null 'alias still held on another IP: do not steal'
 $moved = Resolve-SshLanPair '10.9.8.25' @() $macA $known $paired
 Assert-Equal $moved.Pair.Alias 'box-a' 'same MAC at a new address keeps its name'
 Assert-True $moved.Moved 'and says it moved'

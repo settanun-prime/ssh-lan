@@ -70,6 +70,10 @@ function Get-SshLanLatestAudit([int]$LookBack = 30) {
             $hit = @($old.Machines | Where-Object { $_.Ip -eq $m.Ip -and -not $_.Error -and $_.Hostname })[0]
             if (-not $hit) { continue }
             foreach ($k in 'Hostname', 'Chassis', 'Media', 'Os', 'Server') { if ($null -eq $m.$k -or "$($m.$k)" -eq '') { $m | Add-Member -NotePropertyName $k -NotePropertyValue $hit.$k -Force } }
+            foreach ($k in 'SshOut', 'SshIn', 'SshLiveIn', 'SshLiveOut') {
+                if (@($m.$k).Count) { continue }
+                if (@($hit.$k).Count) { $m | Add-Member -NotePropertyName $k -NotePropertyValue @($hit.$k) -Force }
+            }
             $m | Add-Member -NotePropertyName FactsFrom -NotePropertyValue ([string]$old.Time) -Force
             $need = @($need | Where-Object { $_ -ne $m })
         }
@@ -182,10 +186,16 @@ function Get-SshLanSshTraffic([int]$Days = 30) {
     $ev = @(Get-WinEvent -FilterHashtable @{ LogName = 'OpenSSH/Operational'; StartTime = (Get-Date).AddDays(-$Days) } -ErrorAction SilentlyContinue)
     $ports = @(@(22) + @((Get-SshLanPairedHosts).Values | ForEach-Object { [int]$_.Port }) | Select-Object -Unique)
     $tcp = @(Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue)
+    # never count this PC talking to itself (sshd on .100 + client to .100 showed up as "live" and hid real peers)
+    $self = @{}
+    foreach ($a in @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.IPAddress })) {
+        if ($a -and $a -notmatch '^127\.') { $self[$a] = $true }
+    }
+    $peer = { param($ip) $ip -and -not $self.ContainsKey([string]$ip) -and [string]$ip -ne '::1' -and [string]$ip -notmatch '^127\.' }
     return @{
         In = (ConvertFrom-SshLanSshdLog $ev)
-        LiveIn = @($tcp | Where-Object { $_.LocalPort -eq 22 } | ForEach-Object { [string]$_.RemoteAddress } | Select-Object -Unique)
-        LiveOut = @($tcp | Where-Object { $ports -contains $_.RemotePort } | ForEach-Object { [string]$_.RemoteAddress } | Select-Object -Unique)
+        LiveIn = @($tcp | Where-Object { $ports -contains $_.LocalPort -and (& $peer $_.RemoteAddress) } | ForEach-Object { [string]$_.RemoteAddress } | Select-Object -Unique)
+        LiveOut = @($tcp | Where-Object { $ports -contains $_.RemotePort -and (& $peer $_.RemoteAddress) } | ForEach-Object { [string]$_.RemoteAddress } | Select-Object -Unique)
     }
 }
 
@@ -283,6 +293,10 @@ function Get-SshLanTopologyModel([object[]]$Devices, $Audit, [object[]]$Peers, [
             FactsFrom = $(if ($m -and $m.FactsFrom) { [string]$m.FactsFrom } else { '' }); Red = $(if ($m) { [int]$m.Red } else { 0 }); Amber = $(if ($m) { [int]$m.Amber } else { 0 }); AuditError = $(if ($m) { [string]$m.Error } else { '' })
             Findings = @($findings[[string]$d.Ip] | Where-Object { $_ }); TsIps = $(if ($peer) { @($peer.ips) } else { @() }); TsOnline = $(if ($peer) { $peer.online } else { $false }); TsSeen = $(if ($peer) { $peer.lastSeen } else { $null })
             TsPeer = $tsLink; Facts = (Get-SshLanNodeFacts $m); TempOpen = (Get-SshLanNodeTempList ([string]$d.Mac) $tempBy)
+            # SSH graph from the last audit that reached this box (config HostName + sshd Accepted + live sockets)
+            SshPeersOut = $(if ($m) { @($m.SshOut | ForEach-Object { [string]$_ } | Where-Object { $_ }) } else { @() })
+            SshPeersIn = $(if ($m) { @($m.SshIn | ForEach-Object { [string]$_ } | Where-Object { $_ }) } else { @() })
+            SshPeersLive = $(if ($m) { @(@($m.SshLiveIn) + @($m.SshLiveOut) | ForEach-Object { [string]$_ } | Where-Object { $_ } | Select-Object -Unique) } else { @() })
         }
     }
     $nodes = @($byKey.Values | Sort-Object { ConvertTo-SshLanUInt32 $_.Ip })
@@ -295,6 +309,7 @@ function Get-SshLanTopologyModel([object[]]$Devices, $Audit, [object[]]$Peers, [
             Note = ''; Alias = ''; User = ''; Paired = $false; Link = 'tailscale'; Chassis = $null; Color = 'gray'; Audited = $false
             Red = 0; Amber = 0; AuditError = ''; Findings = @(); TsIps = @($p.ips); TsOnline = $p.online; TsSeen = $p.lastSeen
             TsPeer = ''; Facts = $null; TempOpen = (Get-SshLanNodeTempList '' $null)
+            SshPeersOut = @(); SshPeersIn = @(); SshPeersLive = @()
         }
     })
     foreach ($n in $nodes + $tsOnly) { $n.Label = if ($n.Name) { $n.Name } else { $n.Ip } }
@@ -315,7 +330,11 @@ function Get-SshLanNamePrefix([string]$Name) {
 # View: 'link' (router in the middle, lines to each device) or 'group' (80x66 tiles in labelled groups)
 function Get-SshLanTopologyLayout($Model, [string]$View = '', [string]$GroupBy = 'subnet', [int]$Width = 1100) {
     $lan = @($Model.Nodes)
-    if (-not $View) { $View = if ($lan.Count -le 12) { 'link' } else { 'group' } }
+    # link view carries SSH motion; keep it when any SSH evidence exists even if the LAN is crowded with phones
+    if (-not $View) {
+        $sshN = @($lan | Where-Object { $_.SshOut -or $_.SshIn -or @($_.SshPeersOut).Count -or @($_.SshPeersIn).Count }).Count
+        $View = if ($lan.Count -le 12 -or $sshN) { 'link' } else { 'group' }
+    }
     $place = New-Object System.Collections.Generic.List[object]
     $edges = New-Object System.Collections.Generic.List[object]
     $groups = New-Object System.Collections.Generic.List[object]
@@ -363,28 +382,65 @@ function Get-SshLanTopologyLayout($Model, [string]$View = '', [string]$GroupBy =
                 $ncx = $xs[$c]
                 $place.Add(@{ Key = $n.Key; X = $ncx - $nw / 2; Y = $y; W = $nw; H = $nh })
                 $edges.Add(@{ From = $(if ($router) { $router.Key } else { 'router' }); To = $n.Key; Style = $n.Link; Ssh = $n.Paired -and $n.Online -and -not $hasSelf
+                              Online = [bool]$n.Online
                               X1 = $ncx; Y1 = $bus; X2 = $ncx; Y2 = $y
                               Points = @(@($cx, $hubBottom), @($cx, $bus), @($ncx, $bus), @($ncx, $y)) })
             }
         }
-        # SSH with this PC: out of its bottom edge, along a lane under the lower row, up into the other machine.
-        # Dir = out (paired here) / in (it logged in here) / both; Live = a session is open now
+        # SSH edges from evidence on any home-office box: this PC's pair/login, plus each audited member's config + sshd log.
         # shortcut: a line between rows can cross a device in the row between; route around it if maps grow past two rows
         $at = @{}; foreach ($p in $place) { $at[[string]$p.Key] = $p }
+        $byIp = @{}; foreach ($n in $rest) { if ($n.Ip) { $byIp[[string]$n.Ip] = $n } }
         $me = @($rest | Where-Object { $_.IsSelf })[0]
-        $i = 0
+        # directed hops FromKey -> ToKey; later collapsed to one drawn edge with Dir
+        $hop = @{}
+        $mark = {
+            param($FromKey, $ToKey, [bool]$Live)
+            if (-not $FromKey -or -not $ToKey -or $FromKey -eq $ToKey) { return }
+            $k = "$FromKey>$ToKey"
+            if ($hop.ContainsKey($k)) { if ($Live) { $hop[$k] = $true }; return }
+            $hop[$k] = $Live
+        }
         if ($me) {
-            $s = $at[[string]$me.Key]
             foreach ($n in @($rest | Where-Object { $_.SshOut -or $_.SshIn })) {
-                $t = $at[[string]$n.Key]
-                $lane = [Math]::Max($s.Y, $t.Y) + $nh + 10 + 6 * ($i % 5)
-                $sx = $s.X + 20 + 16 * ($i % 5); $tx = $t.X + $nw / 2
-                $edges.Add(@{ From = $me.Key; To = $n.Key; Style = 'ssh'; Ssh = $false; Live = [bool]$n.SshLive
-                              Dir = $(if ($n.SshOut -and $n.SshIn) { 'both' } elseif ($n.SshOut) { 'out' } else { 'in' })
-                              X1 = $sx; Y1 = $s.Y + $nh; X2 = $tx; Y2 = $t.Y + $nh
-                              Points = @(@($sx, ($s.Y + $nh)), @($sx, $lane), @($tx, $lane), @($tx, ($t.Y + $nh))) })
-                $i++
+                if ($n.SshOut) { & $mark $me.Key $n.Key ([bool]$n.SshLive) }
+                if ($n.SshIn) { & $mark $n.Key $me.Key ([bool]$n.SshLive) }
             }
+        }
+        foreach ($n in $rest) {
+            foreach ($ip in @($n.SshPeersOut)) {
+                $t = $byIp[[string]$ip]; if (-not $t) { continue }
+                & $mark $n.Key $t.Key (@($n.SshPeersLive) -contains [string]$ip)
+            }
+            foreach ($ip in @($n.SshPeersIn)) {
+                $t = $byIp[[string]$ip]; if (-not $t) { continue }
+                & $mark $t.Key $n.Key (@($n.SshPeersLive) -contains [string]$ip)
+            }
+        }
+        $pairs = @{}
+        foreach ($k in @($hop.Keys)) {
+            $parts = $k -split '>', 2
+            $pair = if ($parts[0] -lt $parts[1]) { "$($parts[0])|$($parts[1])" } else { "$($parts[1])|$($parts[0])" }
+            $pairs[$pair] = $true
+        }
+        $i = 0
+        foreach ($pair in @($pairs.Keys)) {
+            $ab = $pair -split '\|', 2
+            $a = $ab[0]; $b = $ab[1]
+            $fwd = $hop.ContainsKey("$a>$b"); $back = $hop.ContainsKey("$b>$a")
+            # Points always follow an outbound hop so Dir out/both puts the arrow on the right end
+            if ($fwd -and $back) { $from = $a; $to = $b; $dir = 'both' }
+            elseif ($fwd) { $from = $a; $to = $b; $dir = 'out' }
+            else { $from = $b; $to = $a; $dir = 'out' }
+            $live = [bool]($hop["$a>$b"] -or $hop["$b>$a"])
+            $s = $at[$from]; $t = $at[$to]
+            if (-not $s -or -not $t) { continue }
+            $lane = [Math]::Max($s.Y, $t.Y) + $nh + 10 + 6 * ($i % 5)
+            $sx = $s.X + 20 + 16 * ($i % 5); $tx = $t.X + $nw / 2
+            $edges.Add(@{ From = $from; To = $to; Style = 'ssh'; Ssh = $false; Live = $live; Dir = $dir
+                          X1 = $sx; Y1 = $s.Y + $nh; X2 = $tx; Y2 = $t.Y + $nh
+                          Points = @(@($sx, ($s.Y + $nh)), @($sx, $lane), @($tx, $lane), @($tx, ($t.Y + $nh))) })
+            $i++
         }
         if ($rowsN) { $trunk.Insert(0, @(@($cx, $hubBottom), @($cx, ($top + ($rowsN - 1) * ($nh + 80) - 34)))) }
         $anchors.trunk = $trunk.ToArray()

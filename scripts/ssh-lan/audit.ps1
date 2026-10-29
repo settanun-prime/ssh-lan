@@ -85,6 +85,8 @@ function Invoke-SshLanAudit([object[]]$Devices, [hashtable]$Collectors, [string[
     ConvertTo-Json -Depth 8 -InputObject ([ordered]@{ Time = $time.ToString('s', $inv); Summary = $summary; Internet = $internet; Findings = $all
         Machines = @($byMachine.Values | ForEach-Object { $f = $_.Facts
             @{ Ip = $_.Ip; Name = $_.Name; Hostname = [string]$f.hostname; Color = $_.Color; Member = [bool]$f.member; Os = $f.os; Chassis = $f.chassis; Media = $f.media; Server = $f.server
+               SshOut = @($f.sshOut | Where-Object { $_ }); SshIn = @($f.sshIn | Where-Object { $_ })
+               SshLiveIn = @($f.sshLiveIn | Where-Object { $_ }); SshLiveOut = @($f.sshLiveOut | Where-Object { $_ })
                Error = $f.error; Red = @($_.Findings | Where-Object { $_.Color -eq 'red' }).Count; Amber = @($_.Findings | Where-Object { $_.Color -eq 'amber' }).Count } }) }) |
         Set-Content -LiteralPath $path -Encoding UTF8
 

@@ -118,6 +118,25 @@ $rdpTcp = Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Serv
 $ip = @(Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -match '^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)' } | Select-Object -First 1)[0]
 $nic = if ($ip) { Get-NetAdapter -InterfaceIndex $ip.InterfaceIndex } else { $null }
 $media = switch -Regex ("$($nic.PhysicalMediaType)") { '802\.3' { 'wired' } '802\.11' { 'wifi' } default { $null } }
+# SSH graph for the map: who this box is set up to call, who has logged in here, who is connected now (LAN IPs only)
+$lan = '^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)'
+$sshOut = New-Object System.Collections.Generic.List[string]
+foreach ($cfg in @((Join-Path $env:USERPROFILE '.ssh\config'), (Join-Path $env:ProgramData 'ssh\ssh_config'))) {
+    if (-not (Test-Path -LiteralPath $cfg)) { continue }
+    foreach ($m in [regex]::Matches([string](Get-Content -LiteralPath $cfg -Raw -ErrorAction SilentlyContinue), '(?im)^\s*HostName\s+(\S+)')) {
+        $h = [string]$m.Groups[1].Value
+        if ($h -match $lan -and -not $sshOut.Contains($h)) { [void]$sshOut.Add($h) }
+    }
+}
+$sshIn = New-Object System.Collections.Generic.List[string]
+foreach ($e in @(Get-WinEvent -FilterHashtable @{ LogName = 'OpenSSH/Operational'; StartTime = (Get-Date).AddDays(-30) } -ErrorAction SilentlyContinue)) {
+    if ("$($e.Message)" -notmatch 'Accepted \S+ for \S+ from (\d+\.\d+\.\d+\.\d+) ') { continue }
+    $peer = $Matches[1]
+    if ($peer -match $lan -and -not $sshIn.Contains($peer)) { [void]$sshIn.Add($peer) }
+}
+$tcp = @(Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue)
+$sshLiveIn = @($tcp | Where-Object { $_.LocalPort -eq 22 -and $_.RemoteAddress -match $lan } | ForEach-Object { [string]$_.RemoteAddress } | Select-Object -Unique)
+$sshLiveOut = @($tcp | Where-Object { $_.RemotePort -eq 22 -and $_.RemoteAddress -match $lan } | ForEach-Object { [string]$_.RemoteAddress } | Select-Object -Unique)
 @{
     machine = $env:COMPUTERNAME; hostname = $env:COMPUTERNAME; ip = $ip.IPAddress; member = $true; os = 'Windows'; profile = $profile
     firewallOn = $fwOn
@@ -127,6 +146,7 @@ $media = switch -Regex ("$($nic.PhysicalMediaType)") { '802\.3' { 'wired' } '802
     rdp = $(if ($ts) { @{ on = ($ts.fDenyTSConnections -eq 0); nla = ($rdpTcp.UserAuthentication -eq 1) } } else { $null })
     scannedPorts = @(); chassis = [string]@((Get-CimInstance Win32_SystemEnclosure).ChassisTypes)[0]; media = $media
     server = $(if ($osInfo = Get-CimInstance Win32_OperatingSystem) { [int]$osInfo.ProductType -ne 1 } else { $null })
+    sshOut = @($sshOut); sshIn = @($sshIn); sshLiveIn = @($sshLiveIn); sshLiveOut = @($sshLiveOut)
 } | ConvertTo-Json -Depth 5 -Compress
 '@
 }
@@ -171,6 +191,15 @@ echo '### host'; hostname 2>/dev/null
 echo '### media'
 D=$(ip -4 route show default 2>/dev/null | awk '{for(i=1;i<NF;i++) if($i=="dev"){print $(i+1); exit}}')
 if [ -n "$D" ]; then if [ -d "/sys/class/net/$D/wireless" ]; then echo wifi; elif [ -e "/sys/class/net/$D/device" ]; then echo wired; fi; fi
+echo '### sshcfg'
+for f in "$HOME/.ssh/config" /etc/ssh/ssh_config; do [ -f "$f" ] && cat "$f"; done
+echo '### sshauth'
+if [ -n "$S" ]; then
+  $S journalctl -u ssh -u sshd --since '30 days ago' -o cat 2>/dev/null | grep 'Accepted ' | tail -n 200
+  $S grep 'Accepted ' /var/log/auth.log /var/log/secure 2>/dev/null | tail -n 200
+fi
+echo '### sshlive'
+ss -Htn state established '( sport = :22 or dport = :22 )' 2>/dev/null
 '@
     return $sh -replace "`r", ''
 }
@@ -242,6 +271,33 @@ function ConvertFrom-SshLanLinuxFacts([string]$Text, [string]$Machine, [string]$
     }
     $chassis = @($sec['chassis'])[0]
     $target = [string]@($sec['target'])[0]
+    $lan = '^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)'
+    $sshOut = New-Object System.Collections.Generic.List[string]
+    foreach ($l in @($sec['sshcfg'])) {
+        if ($l -notmatch '(?i)^\s*HostName\s+(\S+)') { continue }
+        $h = $Matches[1]
+        if ($h -match $lan -and -not $sshOut.Contains($h)) { [void]$sshOut.Add($h) }
+    }
+    $sshIn = New-Object System.Collections.Generic.List[string]
+    foreach ($l in @($sec['sshauth'])) {
+        if ($l -notmatch 'Accepted \S+ for \S+ from (\d+\.\d+\.\d+\.\d+)') { continue }
+        $peer = $Matches[1]
+        if ($peer -match $lan -and -not $sshIn.Contains($peer)) { [void]$sshIn.Add($peer) }
+    }
+    $sshLiveIn = New-Object System.Collections.Generic.List[string]
+    $sshLiveOut = New-Object System.Collections.Generic.List[string]
+    foreach ($l in @($sec['sshlive'])) {
+        $c = @(-split $l)
+        if ($c.Count -lt 2) { continue }
+        $local = [string]$c[-2]; $peer = [string]$c[-1]
+        if ($local -notmatch '^(.*?):(\d+)$') { continue }
+        $lport = [int]$Matches[2]
+        if ($peer -notmatch '^(.*?):(\d+)$') { continue }
+        $pip = ($Matches[1] -replace '^\[|\]$', ''); $pport = [int]$Matches[2]
+        if ($pip -notmatch $lan) { continue }
+        if ($lport -eq 22 -and -not $sshLiveIn.Contains($pip)) { [void]$sshLiveIn.Add($pip) }
+        if ($pport -eq 22 -and -not $sshLiveOut.Contains($pip)) { [void]$sshLiveOut.Add($pip) }
+    }
     return @{
         machine = $Machine; hostname = [string]@($sec['host'])[0]; ip = $Ip; member = $true; os = [string]@($sec['os'])[0]; profile = $null; firewallOn = $fwOn
         tempRules = @($tempRules.ToArray())
@@ -250,6 +306,7 @@ function ConvertFrom-SshLanLinuxFacts([string]$Text, [string]$Machine, [string]$
         # no desktop session to boot into = a server (spec: systemctl get-default)
         server = $(if ($target) { $target.Trim() -eq 'multi-user.target' } else { $null })
         media = $(switch ([string]@($sec['media'])[0]) { 'wifi' { 'wifi' } 'wired' { 'wired' } default { $null } })
+        sshOut = @($sshOut); sshIn = @($sshIn); sshLiveIn = @($sshLiveIn); sshLiveOut = @($sshLiveOut)
     }
 }
 

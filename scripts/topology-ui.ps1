@@ -48,6 +48,7 @@ function Add-MapChild($El, [double]$X, [double]$Y, [int]$Z = 0) {
 # a cable from the bus down to a device (style = wired / wifi / unknown / internet; ssh = paired and online: green, with a moving dot);
 # Tailscale edges are drawn along their whole route
 function Add-MapEdge($E, [int]$Begin, [bool]$Intro) {
+    # cable gray (no fake traffic dots). green SSH = pair/login evidence; dots run on those lines only.
     $color = '#8F9BB3'
     $dash = $null; $opacity = 1
     switch ($E.Style) {
@@ -55,7 +56,7 @@ function Add-MapEdge($E, [int]$Begin, [bool]$Intro) {
         'unknown' { $dash = '1,4'; $opacity = 0.55 }
         'tailscale' { $color = '#A78BFA'; $dash = '3,3'; $opacity = 0.85 }
         'internet' { $color = '#6B7487' }
-        # SSH with this PC: dashed while only set up, solid once a session is open
+        # SSH: dashed = set up / logged in before; solid = session open now
         'ssh' { $color = '#4ADE80'; if (-not $E.Live) { $dash = '5,3'; $opacity = 0.8 } }
     }
     if ($E.Ssh) { $color = '#4ADE80'; $dash = $null; $opacity = 1 }
@@ -87,33 +88,41 @@ function Add-MapEdge($E, [int]$Begin, [bool]$Intro) {
             Add-MapChild $tri 0 0 1
         }
     }
-    # data really flows: a dot runs the whole route on SSH lines, slowly on Tailscale ones; on an open session it runs
-    # the way the SSH goes (both ways: one dot each way)
+    # dots only on SSH edges (pair / login / audit graph). Cable and internet stay still — those were the fake ones.
+    # Canvas Left/Top stay 0: DoubleAnimationUsingPath writes absolute path coords into the translate.
     $runs = if ($E.Style -eq 'ssh') {
-        if (-not $E.Live) { @() } else { switch ($E.Dir) { 'out' { @($true) } 'in' { @($false) } default { @($true, $false) } } }
-    } elseif ($E.Ssh -or $E.Style -eq 'tailscale') { @($true) } else { @() }
+        switch ($E.Dir) { 'out' { @($true) } 'in' { @($false) } default { @($true, $false) } }
+    } elseif ($E.Ssh) { @($true) } else { @() }
     foreach ($fwd in $runs) {
         if (-not $motion -or @($E.Points).Count -lt 2) { break }
-        $pts = if ($fwd) { @($E.Points) } else { $r = @($E.Points); [array]::Reverse($r); $r }
+        $pts = if ($fwd) { @($E.Points) } else { $r = @($E.Points); [array]::Reverse($r); @($r) }
+        if (@($pts).Count -lt 2) { continue }
         $fig = New-Object Windows.Media.PathFigure
-        $fig.StartPoint = New-Object Windows.Point $pts[0][0], $pts[0][1]
-        $len = 0
+        $fig.StartPoint = New-Object Windows.Point ([double]$pts[0][0]), ([double]$pts[0][1])
+        $len = 0.0
         for ($i = 1; $i -lt $pts.Count; $i++) {
-            [void]$fig.Segments.Add((New-Object Windows.Media.LineSegment ((New-Object Windows.Point $pts[$i][0], $pts[$i][1]), $true)))
-            $len += [Math]::Abs($pts[$i][0] - $pts[$i - 1][0]) + [Math]::Abs($pts[$i][1] - $pts[$i - 1][1])
+            $x = [double]$pts[$i][0]; $y = [double]$pts[$i][1]
+            [void]$fig.Segments.Add((New-Object Windows.Media.LineSegment ((New-Object Windows.Point $x, $y), $true)))
+            $len += [Math]::Abs($x - [double]$pts[$i - 1][0]) + [Math]::Abs($y - [double]$pts[$i - 1][1])
         }
+        if ($len -lt 1) { continue }
         $geo = New-Object Windows.Media.PathGeometry
         [void]$geo.Figures.Add($fig)
         $dot = New-Object Windows.Shapes.Ellipse
-        $dot.Width = 7; $dot.Height = 7; $dot.Fill = New-MapBrush $color; $dot.IsHitTestVisible = $false
+        $sz = if ($E.Live) { 10 } else { 8 }
+        $dot.Width = $sz; $dot.Height = $sz
+        $dot.Fill = New-MapBrush $(if ($E.Live) { '#86EFAC' } else { '#4ADE80' })
+        $dot.Stroke = New-MapBrush '#052E16'; $dot.StrokeThickness = 1
+        $dot.IsHitTestVisible = $false
         $tt = New-Object Windows.Media.TranslateTransform
         $dot.RenderTransform = $tt
-        Add-MapChild $dot -3.5 -3.5 2
-        $ms = [int]([Math]::Max(1200, $len * $(if ($E.Ssh -or $E.Style -eq 'ssh') { 5 } else { 12 })))
+        Add-MapChild $dot (-$sz / 2) (-$sz / 2) 4
+        # start now — do not wait for the intro stagger or the dots never feel "live"
+        $ms = [int]([Math]::Max(1400, $len * $(if ($E.Live) { 4 } else { 6 })))
         foreach ($axis in 'X', 'Y') {
             $a = New-Object Windows.Media.Animation.DoubleAnimationUsingPath
             $a.PathGeometry = $geo; $a.Source = $axis
-            $a.Duration = [TimeSpan]::FromMilliseconds($ms); $a.BeginTime = [TimeSpan]::FromMilliseconds($Begin + 520)
+            $a.Duration = [TimeSpan]::FromMilliseconds($ms)
             $a.RepeatBehavior = [Windows.Media.Animation.RepeatBehavior]::Forever
             $tt.BeginAnimation($(if ($axis -eq 'X') { [Windows.Media.TranslateTransform]::XProperty } else { [Windows.Media.TranslateTransform]::YProperty }), $a)
         }
