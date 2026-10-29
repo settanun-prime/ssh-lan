@@ -1,0 +1,27 @@
+{
+ "facts": {
+  "machine": "",
+  "ip": "192.168.1.70",
+  "member": false,
+  "os": null,
+  "profile": null,
+  "firewallOn": null,
+  "listeners": [],
+  "sshdPassword": null,
+  "smb1": null,
+  "rdp": null,
+  "scannedPorts": [
+   80
+  ],
+  "chassis": null,
+  "media": null
+ },
+ "context": {
+  "subnets": [
+   "192.168.1.0/24"
+  ],
+  "internetPorts": [],
+  "upnp": null,
+  "cgnat": null
+ }
+}

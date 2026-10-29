@@ -1,0 +1,28 @@
+### os
+Ubuntu 24.04.1 LTS
+### ss
+State  Recv-Q Send-Q                         Local Address:Port  Peer Address:PortProcess
+LISTEN 0      4096                                 0.0.0.0:80         0.0.0.0:*          
+LISTEN 0      4096                                 0.0.0.0:22         0.0.0.0:*          
+LISTEN 0      4096                                 0.0.0.0:8200       0.0.0.0:*          
+LISTEN 0      4096                100.64.0.105%tailscale0:41288      0.0.0.0:*          
+LISTEN 0      4096                               127.0.0.1:631        0.0.0.0:*          
+LISTEN 0      4096                              127.0.0.54:53         0.0.0.0:*          
+LISTEN 0      4096                                 0.0.0.0:8080       0.0.0.0:*          
+LISTEN 0      4096                                 0.0.0.0:8088       0.0.0.0:*          
+LISTEN 0      4096                           127.0.0.53%lo:53         0.0.0.0:*          
+LISTEN 0      4096                                    [::]:80            [::]:*          
+LISTEN 0      4096                                    [::]:22            [::]:*          
+LISTEN 0      4096                                    [::]:8200          [::]:*          
+LISTEN 0      4096                                   [::1]:631           [::]:*          
+LISTEN 0      4096                                       *:45876            *:*          
+LISTEN 0      4096   [fd7a:115c:a1e0::102]%tailscale0:39727         [::]:*          
+LISTEN 0      4096                                    [::]:8080          [::]:*          
+LISTEN 0      4096                                       *:8090             *:*          
+LISTEN 0      4096                                    [::]:8088          [::]:*          
+### ufw
+none
+### sshd
+present
+### chassis
+10

@@ -1,0 +1,26 @@
+{
+ "facts": {
+  "machine": "router",
+  "ip": "192.168.1.1",
+  "member": false,
+  "os": null,
+  "profile": null,
+  "firewallOn": null,
+  "listeners": [],
+  "sshdPassword": null,
+  "smb1": null,
+  "rdp": null,
+  "scannedPorts": [],
+  "chassis": null,
+  "media": null,
+  "isRouter": true
+ },
+ "context": {
+  "subnets": [
+   "192.168.1.0/24"
+  ],
+  "internetPorts": [],
+  "upnp": true,
+  "cgnat": null
+ }
+}

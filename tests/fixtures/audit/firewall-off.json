@@ -1,0 +1,25 @@
+{
+ "facts": {
+  "machine": "PC-1",
+  "ip": "192.168.1.40",
+  "member": true,
+  "os": "Windows",
+  "profile": "Private",
+  "firewallOn": false,
+  "listeners": [],
+  "sshdPassword": false,
+  "smb1": false,
+  "rdp": null,
+  "scannedPorts": [],
+  "chassis": null,
+  "media": null
+ },
+ "context": {
+  "subnets": [
+   "192.168.1.0/24"
+  ],
+  "internetPorts": [],
+  "upnp": null,
+  "cgnat": null
+ }
+}

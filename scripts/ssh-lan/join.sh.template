@@ -1,0 +1,39 @@
+#!/bin/sh
+# SSH LAN join for Linux and macOS: turns on the SSH server, trusts the inviting PC, sends this machine's public key back.
+# Link: curl -fsS <link>join.sh | sh    USB: sh join.sh (inviter.pub next to it)
+set -eu
+BASEURL='{{BASEURL}}'
+KEY="$HOME/.ssh/{{KEYNAME}}"
+
+if [ -n "$BASEURL" ]; then PUB=$(curl -fsS "${BASEURL}inviter.pub"); else PUB=$(cat "$(dirname "$0")/inviter.pub"); fi
+# the code comes from the key actually received, so a swapped key shows a different code than the inviting PC
+CODE=$(printf '%s' "$PUB" | awk '{print $2}' | base64 -d 2>/dev/null | { sha256sum 2>/dev/null || shasum -a 256; } | cut -c1-6 | tr 'a-f' 'A-F')
+echo "SSH LAN: confirm code $CODE - it must match the code on the inviting PC"
+printf 'Same code? [y/N] '
+read -r ok </dev/tty
+[ "$ok" = y ] || [ "$ok" = Y ] || { echo 'Cancelled, nothing changed.'; exit 1; }
+
+if [ "$(uname)" = Darwin ]; then sudo systemsetup -setremotelogin on
+elif command -v apt-get >/dev/null 2>&1; then sudo apt-get install -y openssh-server && sudo systemctl enable --now ssh
+elif command -v dnf >/dev/null 2>&1; then sudo dnf install -y openssh-server && sudo systemctl enable --now sshd
+else echo 'Install openssh-server with your package manager, then run this again.'; exit 1
+fi
+
+umask 077
+mkdir -p "$HOME/.ssh"
+touch "$HOME/.ssh/authorized_keys"
+grep -qxF "$PUB" "$HOME/.ssh/authorized_keys" || echo "$PUB" >> "$HOME/.ssh/authorized_keys"
+[ -f "$KEY.pub" ] || ssh-keygen -q -t ed25519 -N '' -f "$KEY"
+
+IPS=$(hostname -I 2>/dev/null || ipconfig getifaddr en0 2>/dev/null || true)
+CHASSIS=$(cat /sys/class/dmi/id/chassis_type 2>/dev/null || true)
+HELLO="{\"hostname\":\"$(hostname -s)\",\"user\":\"$(id -un)\",\"ips\":\"$IPS\",\"pubkey\":\"$(head -n1 "$KEY.pub")\",\"os\":\"$(uname -s)\",\"chassis\":\"$CHASSIS\"}"
+if [ -n "$BASEURL" ]; then
+  curl -fsS -H 'Content-Type: application/json' "${BASEURL}hello" --data "$HELLO"
+  echo
+else
+  # USB: the inviting PC reads this over SSH when you press "pair" there
+  mkdir -p "$HOME/.config/ssh-lan"
+  printf '%s\n' "$HELLO" > "$HOME/.config/ssh-lan/hello.json"
+fi
+echo 'SSH LAN: done. The inviting PC finishes the pairing.'

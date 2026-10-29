@@ -1,0 +1,30 @@
+@echo off
+setlocal
+rem SSH LAN join: installs OpenSSH Server and SSH LAN, trusts the inviting PC, sends this PC's public key back.
+rem ASCII only on purpose: cmd.exe does not read UTF-8 reliably. The Thai messages live in join.ps1.
+set "BASEURL={{BASEURL}}"
+set "ZIPHASH={{ZIPHASH}}"
+set "CODE={{CODE}}"
+set "SRC=%~dp0"
+set "WORK=%TEMP%\sshlan-join"
+set "EXTRA={{TAILSCALE}}"
+rem started from PowerShell 7, Windows PowerShell would inherit 7's module path and lose Get-FileHash; empty = its own default
+set "PSModulePath="
+if "%SSHLAN_DRYRUN%"=="1" (
+  set "EXTRA=%EXTRA% -DryRun -NoPrompt"
+) else (
+  net session >nul 2>&1 || (
+    powershell -NoProfile -Command "Start-Process -FilePath $env:ComSpec -ArgumentList '/c','\"%~f0\"' -Verb RunAs"
+    exit /b 0
+  )
+)
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; $w=$env:WORK; Remove-Item $w -Recurse -Force -ErrorAction SilentlyContinue; New-Item -ItemType Directory -Force $w | Out-Null; $z=Join-Path $w 'ssh-lan.zip'; if ($env:BASEURL) { Invoke-WebRequest ($env:BASEURL + 'ssh-lan.zip') -OutFile $z -UseBasicParsing; Invoke-WebRequest ($env:BASEURL + 'inviter.pub') -OutFile (Join-Path $w 'inviter.pub') -UseBasicParsing } else { Copy-Item (Join-Path $env:SRC 'ssh-lan.zip') $z; Copy-Item (Join-Path $env:SRC 'inviter.pub') $w }; if ((Get-FileHash $z -Algorithm SHA256).Hash -ne $env:ZIPHASH) { throw 'package hash mismatch: not installing' }; Add-Type -AssemblyName System.IO.Compression.FileSystem; [IO.Compression.ZipFile]::ExtractToDirectory($z, $w)"
+if errorlevel 1 (
+  echo SSH LAN: the package could not be fetched or failed its check. Nothing was installed.
+  if not "%SSHLAN_DRYRUN%"=="1" pause
+  exit /b 1
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%WORK%\scripts\ssh-lan\join.ps1" -BaseUrl "%BASEURL%" -ConfirmCode "%CODE%" -InviterPubPath "%WORK%\inviter.pub" -InstallFrom "%WORK%" %EXTRA%
+set "RC=%errorlevel%"
+if not "%SSHLAN_DRYRUN%"=="1" pause
+exit /b %RC%

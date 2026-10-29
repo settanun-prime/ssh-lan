@@ -3,6 +3,10 @@
 logs/
 data-demo/
 
+# agent / planning notes stay on this machine only (not the public repo)
+docs/superpowers/
+.superpowers/
+
 # anything that could hold keys or machine-specific settings
 config.json
 *.bak-*

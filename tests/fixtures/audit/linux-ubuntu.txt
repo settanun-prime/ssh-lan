@@ -1,0 +1,32 @@
+### os
+Ubuntu 24.04.1 LTS
+### ss
+State  Recv-Q Send-Q                         Local Address:Port  Peer Address:PortProcess                                                 
+LISTEN 0      4096                                 0.0.0.0:80         0.0.0.0:*    users:(("docker-proxy",pid=3779,fd=8))                 
+LISTEN 0      4096                                 0.0.0.0:22         0.0.0.0:*    users:(("sshd",pid=1361,fd=3),("systemd",pid=1,fd=218))
+LISTEN 0      4096                                 0.0.0.0:8200       0.0.0.0:*    users:(("docker-proxy",pid=2556,fd=8))                 
+LISTEN 0      4096                100.64.0.105%tailscale0:41288      0.0.0.0:*    users:(("tailscaled",pid=1141,fd=23))                  
+LISTEN 0      4096                               127.0.0.1:631        0.0.0.0:*    users:(("cupsd",pid=1138,fd=7))                        
+LISTEN 0      4096                              127.0.0.54:53         0.0.0.0:*    users:(("systemd-resolve",pid=822,fd=17))              
+LISTEN 0      4096                                 0.0.0.0:8080       0.0.0.0:*    users:(("docker-proxy",pid=3804,fd=8))                 
+LISTEN 0      4096                                 0.0.0.0:8088       0.0.0.0:*    users:(("docker-proxy",pid=2494,fd=8))                 
+LISTEN 0      4096                           127.0.0.53%lo:53         0.0.0.0:*    users:(("systemd-resolve",pid=822,fd=15))              
+LISTEN 0      4096                                    [::]:80            [::]:*    users:(("docker-proxy",pid=3787,fd=8))                 
+LISTEN 0      4096                                    [::]:22            [::]:*    users:(("sshd",pid=1361,fd=4),("systemd",pid=1,fd=220))
+LISTEN 0      4096                                    [::]:8200          [::]:*    users:(("docker-proxy",pid=2563,fd=8))                 
+LISTEN 0      4096                                   [::1]:631           [::]:*    users:(("cupsd",pid=1138,fd=6))                        
+LISTEN 0      4096                                       *:45876            *:*    users:(("agent",pid=2214,fd=7))                        
+LISTEN 0      4096   [fd7a:115c:a1e0::102]%tailscale0:39727         [::]:*    users:(("tailscaled",pid=1141,fd=24))                  
+LISTEN 0      4096                                    [::]:8080          [::]:*    users:(("docker-proxy",pid=3809,fd=8))                 
+LISTEN 0      4096                                       *:8090             *:*    users:(("beszel",pid=2346,fd=15))                      
+LISTEN 0      4096                                    [::]:8088          [::]:*    users:(("docker-proxy",pid=2501,fd=8))                 
+### ufw
+ENABLED=no
+Status: inactive
+### sshd
+present
+passwordauthentication yes
+### chassis
+10
+### media
+wifi

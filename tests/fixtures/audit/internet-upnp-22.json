@@ -1,0 +1,39 @@
+{
+ "facts": {
+  "machine": "PC-1",
+  "ip": "192.168.1.40",
+  "member": true,
+  "os": "Windows",
+  "profile": "Private",
+  "firewallOn": true,
+  "listeners": [
+   {
+    "port": 22,
+    "address": "0.0.0.0",
+    "process": "sshd",
+    "exposure": "lan",
+    "rule": "sshd-lan"
+   }
+  ],
+  "sshdPassword": false,
+  "smb1": false,
+  "rdp": null,
+  "scannedPorts": [],
+  "chassis": null,
+  "media": null
+ },
+ "context": {
+  "subnets": [
+   "192.168.1.0/24"
+  ],
+  "internetPorts": [
+   {
+    "port": 22,
+    "target": "192.168.1.40",
+    "via": "upnp"
+   }
+  ],
+  "upnp": true,
+  "cgnat": null
+ }
+}

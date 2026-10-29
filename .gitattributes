@@ -3,3 +3,5 @@
 *.sh text eol=lf
 *.png binary
 *.ico binary
+# keep the join template LF: it becomes join.sh, which Linux runs
+*.sh.template text eol=lf

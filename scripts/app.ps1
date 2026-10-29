@@ -43,7 +43,23 @@ function Update-Ui {
     $window.Dispatcher.Invoke([System.Action]{}, [System.Windows.Threading.DispatcherPriority]::Background)
 }
 
+# the right panel: 'map' (the network map, shown first) or 'log' (what each button did)
+function Show-MainTab([string]$Tab) {
+    $map = $Tab -eq 'map'
+    (Find 'MapHost').Visibility = $(if ($map) { 'Visible' } else { 'Collapsed' })
+    (Find 'LogScroll').Visibility = $(if ($map) { 'Collapsed' } else { 'Visible' })
+    (Find 'TabMap').BorderBrush = New-Brush $(if ($map) { '#F5C451' } else { '#00000000' })
+    (Find 'TabLog').BorderBrush = New-Brush $(if ($map) { '#00000000' } else { '#F5C451' })
+    (Find 'TabMapText').Foreground = New-Brush $(if ($map) { '#F5C451' } else { '#8F9BB3' })
+    (Find 'TabLogText').Foreground = New-Brush $(if ($map) { '#8F9BB3' } else { '#F5C451' })
+    (Find 'TabMapText').FontWeight = $(if ($map) { 'SemiBold' } else { 'Normal' })
+    (Find 'TabLogText').FontWeight = $(if ($map) { 'Normal' } else { 'SemiBold' })
+    if (-not $map) { (Find 'TabLogDot').Visibility = 'Collapsed' }
+}
+
 function Add-Log([string]$Line) {
+    # a new line while the map is showing: a dot on the log tab says there is something to read
+    if ((Find 'LogScroll').Visibility -ne 'Visible' -and $script:ChromeStarted) { (Find 'TabLogDot').Visibility = 'Visible' }
     $color = '#F4F7FB'
     if ($Line -match '\[✓\]') { $color = '#4ADE80' } elseif ($Line -match '\[!\]') { $color = '#F5C451' }
     $row = New-Object System.Windows.Controls.TextBlock
@@ -72,6 +88,7 @@ function Add-Log([string]$Line) {
     $shift.BeginAnimation([System.Windows.Media.TranslateTransform]::YProperty, $rise)
     $list.UpdateLayout()
     (Find 'LogScroll').ScrollToEnd()
+    if ($script:ScanWin) { $script:ScanWin.FindName('ScanLog').Text = $Line }
     Update-Ui
 }
 
@@ -142,7 +159,14 @@ function Update-Chrome {
     }
     $show = if ($server) { 'Visible' } else { 'Collapsed' }
     foreach ($name in @('BtnRemove', 'IpPanel', 'SubnetBox', 'SubnetLabel', 'BtnAddClient')) { (Find $name).Visibility = $show }
+    # says whether the fixed IP really stuck: Manual on the adapter = fixed, otherwise the router handed it out
+    $mode = if ($lan -ne '-') { Get-SshLanIpMode $lan } else { $null }
+    $extras = @(Get-SshLanExtraIps)
+    # the address alone on the big line; how it is set and any temporary address on a quiet line under it
     (Find 'IpLine').Text = $lan
+    (Find 'IpModeLine').Text = $(switch ($mode) { 'static' { 'คงที่' } 'dhcp' { 'อัตโนมัติ (DHCP)' } default { '' } }) +
+        $(if ($extras) { " · รับการเชื่อมต่อทาง $($extras -join ', ') ด้วย (ชั่วคราว)" } else { '' })
+    (Find 'BtnRemoveExtra').Visibility = if ($extras) { 'Visible' } else { 'Collapsed' }
     $svc = Get-Service sshd -ErrorAction SilentlyContinue
     (Find 'SvcLine').Text = if ($svc) { "$($svc.Status)" } else { (Find 'StrNoSshd').Text }
     Set-ServiceDot $svc
@@ -216,6 +240,7 @@ function Start-VisibleChrome {
         $cur = Get-SshLanPrimaryLanIp
         if ($cur) { (Find 'StaticIpBox').Text = $cur }
         Add-Log ((Find 'StrReady').Text + ' ' + $env:COMPUTERNAME)
+        if (Test-SshLanUiAdmin) { Remove-SshLanStaleInviteRule }
         Start-SubnetChoices
     } catch {
         try { Add-Log $_.Exception.Message } catch {}
@@ -225,6 +250,7 @@ function Start-VisibleChrome {
 function Invoke-Logged([scriptblock]$Work) {
     if ($script:Busy) { return }
     $script:Busy = $true
+    Show-MainTab 'log'
     try {
         $window.Cursor = 'Wait'
         (Find 'BusyBar').Visibility = 'Visible'
@@ -243,6 +269,39 @@ function Invoke-Logged([scriptblock]$Work) {
     }
 }
 
+# the app runs straight from its folder: when VERSION there moves on (a new build was copied in or committed),
+# the header button offers to restart onto it; pressed any time, it simply reloads
+$script:StartedVersion = Get-SshLanVersion
+
+function Update-SshLanUpdateButton {
+    $disk = Get-SshLanVersion
+    $b = Find 'BtnUpdate'
+    if ($disk -ne $script:StartedVersion) {
+        $b.Content = "อัปเดตเป็น v$disk"
+        $b.Style = $window.FindResource('PrimaryButton')
+        $b.ToolTip = "ในโฟลเดอร์มีเวอร์ชันใหม่ (v$disk) แต่หน้าต่างนี้ยังเป็น v$($script:StartedVersion): กดเพื่อเปิดใหม่"
+    } else {
+        $b.Content = 'รีเฟรช'
+        $b.ClearValue([System.Windows.FrameworkElement]::StyleProperty)
+        $b.ToolTip = "เปิดแอปใหม่เพื่อโหลดโค้ดล่าสุดจากโฟลเดอร์นี้ (ตอนนี้ v$disk)"
+    }
+}
+
+function Restart-SshLanApp {
+    if ($script:Busy) { Add-Log '[!] รอให้งานที่ทำอยู่เสร็จก่อน แล้วกดอีกครั้ง'; return }
+    $exe = Join-Path $root 'SSH LAN.exe'
+    # same rights as now: an admin window comes back as admin (Windows asks once)
+    $verb = if (Test-SshLanUiAdmin) { @{ Verb = 'RunAs' } } else { @{} }
+    try {
+        if (Test-Path -LiteralPath $exe) { Start-Process -FilePath $exe @verb }
+        else {
+            $ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+            Start-Process -FilePath $ps -ArgumentList '-NoProfile', '-STA', '-File', ('"' + (Join-Path $PSScriptRoot 'app.ps1') + '"') @verb
+        }
+    } catch { Add-Log ('[!] เปิดใหม่ไม่ได้: ' + $_.Exception.Message); return }
+    $window.Close()
+}
+
 function Start-ElevatedApp {
     $exe = Join-Path $root 'SSH LAN.exe'
     if (-not (Test-Path -LiteralPath $exe)) { $exe = Join-Path $root 'SSH LAN Prime Studio.exe' }
@@ -259,6 +318,7 @@ function Start-ElevatedApp {
     (Find 'MainCard').BeginAnimation([System.Windows.UIElement]::OpacityProperty, $fade)
 })
 (Find 'BtnAdmin').Add_Click({ Start-ElevatedApp })
+(Find 'BtnUpdate').Add_Click({ Restart-SshLanApp })
 (Find 'BtnRefresh').Add_Click({
     Update-Chrome
     $lan = (Find 'IpLine').Text
@@ -361,10 +421,27 @@ if ($btnAddClient) {
 (Find 'BtnStaticIp').Add_Click({
     if (-not (Test-SshLanUiAdmin)) { Add-Log (Find 'StrNeedAdmin').Text; return }
     $ip = (Find 'StaticIpBox').Text.Trim()
+    $extra = @((Find 'ExtraIpBox').Text -split '[,\s]+' | Where-Object { $_ })
+    # machines that saved the old address lose this PC the moment it changes: say so before, offer the way to keep them
+    $cur = Get-SshLanPrimaryLanIp
+    $want = if ($ip -match '^\d{1,3}$' -and $cur) { (($cur -split '\.')[0..2] -join '.') + ".$ip" } else { $ip }
+    if ($cur -and $want -and $want -ne $cur -and -not $extra) {
+        $last = ($cur -split '\.')[-1]
+        $ask = [Windows.MessageBox]::Show("เครื่องที่บันทึก $cur ไว้ (SSH, แชร์ไฟล์, Remote Desktop) จะต่อเข้าเครื่องนี้ไม่ได้ จนกว่าจะเปลี่ยนไปใช้ $want`n`nถ้าอยากให้ยังต่อได้ระหว่างนี้ ให้กด ไม่ แล้วใส่ $last ในช่อง 'IP เดิมที่ยังให้ต่อเข้ามาได้'`n`nเปลี่ยนเป็น $want เลยไหม", 'SSH LAN', 'YesNo', 'Warning')
+        if ($ask -ne 'Yes') { (Find 'ExtraIpBox').Text = $last; (Find 'ExtraIpBox').Focus() | Out-Null; return }
+    }
     Invoke-Logged {
-        Add-Log "กำลังตั้งเลข IP คงที่เป็น $ip ..."
-        & (Join-Path $PSScriptRoot 'ssh-lan\set-lan-ip.ps1') -Ip $ip
+        Add-Log ("กำลังตั้งเลข IP คงที่เป็น $ip" + $(if ($extra) { " และเก็บ $($extra -join ', ') ไว้ชั่วคราว" } else { '' }) + ' ...')
+        & (Join-Path $PSScriptRoot 'ssh-lan\set-lan-ip.ps1') -Ip $ip -Extra $extra
         Add-Log ' [✓] ตั้งเลข IP คงที่สำเร็จ'
+    }
+})
+
+(Find 'BtnRemoveExtra').Add_Click({
+    if (-not (Test-SshLanUiAdmin)) { Add-Log (Find 'StrNeedAdmin').Text; return }
+    Invoke-Logged {
+        Add-Log 'กำลังเอา IP ชั่วคราวออก...'
+        & (Join-Path $PSScriptRoot 'ssh-lan\set-lan-ip.ps1') -RemoveExtra
     }
 })
 
@@ -387,6 +464,16 @@ if ($btnAddClient) {
     }
 })
 
+. (Join-Path $PSScriptRoot 'scan-ui.ps1')
+. (Join-Path $PSScriptRoot 'audit-ui.ps1')
+. (Join-Path $PSScriptRoot 'topology-ui.ps1')
+(Find 'BtnLanScan').Add_Click({ Show-ScanWindow })
+(Find 'BtnMap').Add_Click({ Show-MainTab 'map' })
+(Find 'TabMap').Add_MouseLeftButtonUp({ Show-MainTab 'map' })
+(Find 'TabLog').Add_MouseLeftButtonUp({ Show-MainTab 'log' })
+# the map is the first thing the window shows
+Show-MapWindow @() (Find 'MapHost')
+
 (Find 'BtnRemove').Add_Click({
     if (-not (Test-SshLanIsServer)) { return }
     if (-not (Test-SshLanUiAdmin)) { Add-Log (Find 'StrNeedAdmin').Text; return }
@@ -401,11 +488,22 @@ if ($btnAddClient) {
 
 $window.Add_Closed({
     $script:UiClosed = $true
+    try { if ($script:UpdateTimer) { $script:UpdateTimer.Stop() } } catch {}
+    try { Stop-ScanInvite } catch {}
     try { if ($script:SubnetTimer) { $script:SubnetTimer.Stop() } } catch {}
     try { if ($script:SubnetPs) { $script:SubnetPs.Stop(); $script:SubnetPs.Dispose() } } catch {}
 })
 $window.Add_Loaded({
+    # never larger than the screen it opens on (the default size suits 1080p and up)
+    $area = [System.Windows.SystemParameters]::WorkArea
+    if ($window.Width -gt $area.Width - 20) { $window.Width = $area.Width - 20; $window.Left = $area.Left + 10 }
+    if ($window.Height -gt $area.Height - 20) { $window.Height = $area.Height - 20; $window.Top = $area.Top + 10 }
     Start-WindowIntro
+    Update-SshLanUpdateButton
+    $script:UpdateTimer = New-Object System.Windows.Threading.DispatcherTimer
+    $script:UpdateTimer.Interval = [TimeSpan]::FromSeconds(10)
+    $script:UpdateTimer.Add_Tick({ Update-SshLanUpdateButton })
+    $script:UpdateTimer.Start()
     if ($script:ChromeStarted) { return }
     $script:ChromeStarted = $true
     $window.Dispatcher.BeginInvoke(

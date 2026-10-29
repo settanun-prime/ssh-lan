@@ -1,0 +1,28 @@
+### os
+Ubuntu 24.04.1 LTS
+### ss
+State  Recv-Q Send-Q Local Address:Port Peer Address:PortProcess
+LISTEN 0      128          0.0.0.0:22        0.0.0.0:*    users:(("sshd",pid=900,fd=3))
+LISTEN 0      511          0.0.0.0:80        0.0.0.0:*    users:(("nginx",pid=1001,fd=6))
+LISTEN 0      511          0.0.0.0:5005      0.0.0.0:*    users:(("python3",pid=1200,fd=4))
+LISTEN 0      511          0.0.0.0:3306      0.0.0.0:*    users:(("mysqld",pid=1300,fd=20))
+### ufw
+ENABLED=yes
+Status: active
+Logging: on (low)
+Default: deny (incoming), allow (outgoing), disabled (routed)
+New profiles: skip
+
+To                         Action      From
+--                         ------      ----
+OpenSSH                    ALLOW IN    192.168.1.0/24
+80/tcp                     ALLOW IN    Anywhere
+5000:5010/tcp              ALLOW IN    Anywhere
+3306                       DENY IN     Anywhere
+22/tcp                     ALLOW IN    100.64.0.0/10 # sshlan-temp-22-202610291159
+80/tcp (v6)                ALLOW IN    Anywhere (v6)
+### sshd
+present
+passwordauthentication no
+### chassis
+3

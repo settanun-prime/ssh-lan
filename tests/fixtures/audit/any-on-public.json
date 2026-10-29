@@ -1,0 +1,36 @@
+{
+ "facts": {
+  "machine": "PC-1",
+  "ip": "192.168.1.40",
+  "member": true,
+  "os": "Windows",
+  "profile": "Public",
+  "firewallOn": true,
+  "listeners": [
+   {
+    "port": 3389,
+    "address": "0.0.0.0",
+    "process": "svchost",
+    "exposure": "any",
+    "rule": "RemoteDesktop-UserMode-In-TCP"
+   }
+  ],
+  "sshdPassword": false,
+  "smb1": false,
+  "rdp": {
+   "on": true,
+   "nla": true
+  },
+  "scannedPorts": [],
+  "chassis": null,
+  "media": null
+ },
+ "context": {
+  "subnets": [
+   "192.168.1.0/24"
+  ],
+  "internetPorts": [],
+  "upnp": null,
+  "cgnat": null
+ }
+}
