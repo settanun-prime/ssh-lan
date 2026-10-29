@@ -92,8 +92,9 @@ function Add-MapEdge($E, [int]$Begin, [bool]$Intro) {
     #     # a dot only ever follows a measurement (Set-MapEdgeFlow): nothing here runs on its own, so a fresh map is still.
     # Canvas Left/Top stay 0 for the dots: DoubleAnimationUsingPath writes absolute path coords into the translate.
     if ($E.FlowKey) {
-        $script:MapFlow[[string]$E.FlowKey] = @{ Edge = $E; Line = $l; Dots = @(); Dash = $dash; Opacity = $opacity; Color = $color }
-        Set-MapEdgeFlow ([string]$E.FlowKey) (Get-SshLanFlowState $E $null $null)
+        $script:MapFlow[[string]$E.FlowKey] = @{ Edge = $E; Line = $l; Dots = @(); Dash = $dash; Opacity = $opacity; Color = $color; Sig = '' }
+        # a redraw (the 30 s rescan) keeps what the last samples showed instead of going still until the next one
+        Set-MapEdgeFlow ([string]$E.FlowKey) (Get-SshLanFlowState $E $script:MapFlowPrev $script:MapFlowNow)
     }
 }
 
@@ -120,6 +121,7 @@ function New-MapFlowPath($Points, [bool]$Forward) {
 function Set-MapEdgeFlow([string]$FlowKey, $State) {
     $f = $script:MapFlow[$FlowKey]
     if (-not $f) { return }
+    $f.Sig = Get-SshLanFlowSig $State
     $canvas = Find-Map 'MapCanvas'
     foreach ($d in @($f.Dots)) {
         foreach ($p in [Windows.Media.TranslateTransform]::XProperty, [Windows.Media.TranslateTransform]::YProperty) { $d.Tt.BeginAnimation($p, $null) }
@@ -350,6 +352,7 @@ function Show-MapCard($El) {
     & $line "SSH: $(if ($n.Paired) { "จับคู่แล้ว ($($n.Alias))" } else { 'ยังไม่จับคู่' }) · $(if ($n.Online) { 'ออนไลน์' } else { 'ออฟไลน์' })"
     $way = Get-MapSshWay $n
     if ($way) { & $line $way 12 '#4ADE80' }
+    & $line (Get-MapNodeFlowText $n) 12 '#8FB8FF'
     $au = if ($n.Audited) { "audit: แดง $($n.Red) เหลือง $($n.Amber)" + $(if ($n.AuditError) { " · $($n.AuditError)" }) } else { 'audit: ยังไม่ได้ตรวจ' }
     & $line $au 12 $script:MapColor[[string]$n.Color]
     & $line 'คลิกเพื่อดูทั้งหมดและสั่งงาน' 11 '#6B7487'
@@ -918,6 +921,102 @@ function Start-MapTempClock {
     $script:MapTempTimer.Start()
 }
 
+# --- live traffic: one sample every 2.5 s in a runspace of its own, then each line takes the state its measurement gave ---
+$script:MapFlowPrev = $null; $script:MapFlowNow = $null; $script:MapFlowState = @{}
+$script:MapFlowRs = $null; $script:MapFlowPs = $null; $script:MapFlowReady = $false; $script:MapFlowLast = [datetime]::MinValue
+
+function Format-MapRate($Bps) {
+    if ($null -eq $Bps) { return '-' }
+    $b = [double]$Bps
+    if ($b -ge 1000000) { return ('{0:N1} MB/s' -f ($b / 1000000)) }
+    if ($b -ge 1000) { return ('{0:N1} KB/s' -f ($b / 1000)) }
+    return ('{0:N0} B/s' -f $b)
+}
+
+# what a node says about its traffic: the line that reaches it (this PC = the NIC, the router = the internet line, others = their cable)
+function Get-MapNodeFlowText($Node) {
+    $key = if ($Node.IsSelf) { 'nic' } elseif ($Node.IsRouter) { 'internet' } else { "lan:$($Node.Key)" }
+    $st = $script:MapFlowState[$key]
+    $lines = @()
+    if (-not $st) { $lines += 'ทราฟฟิก: กำลังวัด' }
+    elseif ($st.State -in 'flow', 'idle') { $lines += "ทราฟฟิก ↓ $(Format-MapRate $st.RxBps) ↑ $(Format-MapRate $st.TxBps) · การ์ดเน็ตของเครื่องนี้ (ไม่ใช่ของทั้งบ้าน)" }
+    else { $lines += "ทราฟฟิก: $($st.Why)" }
+    $ts = @($Node.Names | Where-Object { $_.from -eq 'Tailscale' })[0]
+    if ($ts) {
+        $r = $null
+        if ($script:MapFlowPrev -and $script:MapFlowNow) {
+            $r = Get-SshLanTsRate $script:MapFlowPrev.Ts $script:MapFlowNow.Ts ([string]$ts.name) (([datetime]$script:MapFlowNow.Time - [datetime]$script:MapFlowPrev.Time).TotalSeconds)
+        }
+        $lines += $(if ($r) { "Tailscale ↓ $(Format-MapRate $r.Rx) ↑ $(Format-MapRate $r.Tx)" } else { 'Tailscale: กำลังวัด' })
+    }
+    return ($lines -join "`n")
+}
+
+# a new sample in: every line whose measurement now looks different gets its dots started, changed or stopped (no redraw)
+function Add-MapFlowSample($Sample) {
+    $script:MapFlowPrev = $script:MapFlowNow
+    $script:MapFlowNow = $Sample
+    if (-not $script:MapLayout) { return }
+    foreach ($e in @($script:MapLayout.Edges)) {
+        if (-not $e.FlowKey) { continue }
+        $st = Get-SshLanFlowState $e $script:MapFlowPrev $script:MapFlowNow
+        $script:MapFlowState[[string]$e.FlowKey] = $st
+        $f = $script:MapFlow[[string]$e.FlowKey]
+        if ($f -and $f.Sig -ne (Get-SshLanFlowSig $st)) { Set-MapEdgeFlow ([string]$e.FlowKey) $st }
+    }
+}
+
+function Stop-MapFlowRead {
+    try { if ($script:MapFlowPs) { $script:MapFlowPs.Dispose() } } catch { }
+    $script:MapFlowPs = $null
+    try { if ($script:MapFlowRs) { $script:MapFlowRs.CloseAsync() } } catch { }
+    $script:MapFlowRs = $null
+    $script:MapFlowReady = $false
+}
+
+function Update-MapFlow {
+    if (-not $script:MapWin) { return }
+    $now = Get-Date
+    if ($script:MapFlowPs) {
+        if ($script:MapFlowHandle.IsCompleted) {
+            try { $s = @($script:MapFlowPs.EndInvoke($script:MapFlowHandle))[0]; if ($s) { $script:MapFlowReady = $true; Add-MapFlowSample $s } } catch { }
+            $script:MapFlowPs.Dispose(); $script:MapFlowPs = $null
+        } elseif (($now - $script:MapFlowStarted).TotalSeconds -gt $(if ($script:MapFlowReady) { 2 } else { 8 })) {
+            Stop-MapFlowRead   # a read that hangs costs this round only; the next one starts clean
+        }
+        return
+    }
+    if (($now - $script:MapFlowLast).TotalSeconds -lt 2.5) { return }
+    if (-not (Find-Map 'MapScroll').IsVisible) { return }
+    if (-not $script:MapFlowRs) {
+        $script:MapFlowRs = [runspacefactory]::CreateRunspace()
+        $script:MapFlowRs.Open()
+    }
+    $script:MapFlowPs = [powershell]::Create()
+    $script:MapFlowPs.Runspace = $script:MapFlowRs
+    # the first read in a runspace loads the app's functions (stay loaded after); later reads only read the counters
+    [void]$script:MapFlowPs.AddScript({
+        param($Root)
+        if (-not (Get-Command Read-SshLanTrafficSample -ErrorAction SilentlyContinue)) {
+            $env:SSH_LAN_UI = '1'
+            . (Join-Path $Root 'scripts\ssh-lan-common.ps1')
+            . (Join-Path $Root 'scripts\ssh-lan\ssh-lan.ps1')
+        }
+        Read-SshLanTrafficSample (Get-SshLanPrimaryLanIp)
+    }).AddArgument($root)
+    $script:MapFlowStarted = $now
+    $script:MapFlowLast = $now
+    $script:MapFlowHandle = $script:MapFlowPs.BeginInvoke()
+}
+
+function Start-MapFlowTimer {
+    if ($script:MapFlowTimer) { return }
+    $script:MapFlowTimer = New-Object Windows.Threading.DispatcherTimer
+    $script:MapFlowTimer.Interval = [TimeSpan]::FromMilliseconds(500)
+    $script:MapFlowTimer.Add_Tick({ try { Update-MapFlow } catch { } })
+    $script:MapFlowTimer.Start()
+}
+
 function Select-MapNode([string]$Key) {
     $n = Get-MapNode $Key
     if (-not $n) { return }
@@ -967,6 +1066,7 @@ function Select-MapNode([string]$Key) {
         @{ K = 'MAC'; V = $(if ($n.Mac) { $n.Mac + $(if ($n.RandomMac) { '  สุ่ม' }) } else { '' }); Copy = $n.Mac; Mono = $true }
         @{ K = 'ต่อแบบ'; V = @{ wired = 'สายแลน'; wifi = 'Wi-Fi'; tailscale = 'Tailscale เท่านั้น'; unknown = '' }[$n.Link] }
         @{ K = 'Tailscale'; V = $tsText; Dot = $(if (@($n.TsIps).Count) { if ($n.TsOnline) { '#4ADE80' } else { '#4B5568' } }) }
+        @{ K = 'ทราฟฟิก'; V = (Get-MapNodeFlowText $n) }
         @{ K = 'หลักฐาน'; V = $n.Evidence })
     $mapDevice = ConvertTo-MapSwitchDevice $n
     $mapMember = Test-MapMember $n
@@ -1287,14 +1387,15 @@ function Show-MapWindow([object[]]$Devices, $Into) {
     # the map area changed size (window resized, side panel opened or closed): lay it out again for the new width
     (Find-Map 'MapScroll').Add_SizeChanged({ param($s, $e) if ($script:MapModel -and $e.WidthChanged) { Show-MapLayout } })
     $script:MapShell.Add_Closed({
-        foreach ($t in $script:MapTimer, $script:MapAuto, $script:MapHoverTimer, $script:MapTempTimer, $script:MapActTimer) { try { if ($t) { $t.Stop() } } catch {} }
+        foreach ($t in $script:MapTimer, $script:MapAuto, $script:MapHoverTimer, $script:MapTempTimer, $script:MapActTimer, $script:MapFlowTimer) { try { if ($t) { $t.Stop() } } catch {} }
+        Stop-MapFlowRead
         try { if ($script:MapPs) { $script:MapPs.Stop(); $script:MapPs.Dispose() } } catch {}
         try { if ($script:MapActPs) { $script:MapActPs.Stop(); $script:MapActPs.Dispose() } } catch {}
         $script:MapPs = $null
         $script:MapActPs = $null
         $script:MapWin = $null
     })
-    if ($script:MapShell.IsLoaded) { Start-MapRefresh $script:MapDevices; $script:MapAuto.Start(); Start-MapTempClock }
-    else { $script:MapShell.Add_Loaded({ Start-MapRefresh $script:MapDevices; $script:MapAuto.Start(); Start-MapTempClock }) }
+    if ($script:MapShell.IsLoaded) { Start-MapRefresh $script:MapDevices; $script:MapAuto.Start(); Start-MapTempClock; Start-MapFlowTimer }
+    else { $script:MapShell.Add_Loaded({ Start-MapRefresh $script:MapDevices; $script:MapAuto.Start(); Start-MapTempClock; Start-MapFlowTimer }) }
     if (-not $script:MapEmbedded) { $script:MapWin.Show() }
 }

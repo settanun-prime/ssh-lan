@@ -106,3 +106,10 @@ function Read-SshLanTrafficSample([string]$LanIp, [string]$TailscaleExe = (Get-S
         SshLive = @(Get-SshLanLivePeers $conns ($ports | Select-Object -Unique) $selfIps); Ts = $ts
     }
 }
+
+# what the dots of a state look like, coarse enough that a rate wobbling inside one level does not restart them
+function Get-SshLanFlowSig($State) {
+    $rx = ConvertTo-SshLanDotSpec ([double]$State.RxBps)
+    $tx = ConvertTo-SshLanDotSpec ([double]$State.TxBps)
+    return "$($State.State)|$([bool]$State.Fixed)|$($rx.Dots):$([int]($rx.Ms / 400))|$($tx.Dots):$([int]($tx.Ms / 400))"
+}

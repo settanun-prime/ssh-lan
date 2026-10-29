@@ -84,3 +84,10 @@ Assert-True ($real.NicRx -is [ValueType]) 'real sample: rx counter is a number'
 Assert-True (((Get-Date) - $real.Time).TotalSeconds -lt 5) 'real sample: stamped now'
 $none = Read-SshLanTrafficSample '127.0.0.1' ''
 Assert-Equal @($none.Ts.Keys).Count 0 'no tailscale.exe gives no peers'
+# --- the signature of a state: a redraw is needed only when what the dots look like changes ---
+$a = @{ State = 'flow'; RxBps = 20000; TxBps = 0; Fixed = $false }
+$b = @{ State = 'flow'; RxBps = 21000; TxBps = 0; Fixed = $false }
+$c = @{ State = 'flow'; RxBps = 2000000; TxBps = 0; Fixed = $false }
+Assert-Equal (Get-SshLanFlowSig $a) (Get-SshLanFlowSig $b) 'a small change in rate keeps the dots as they are'
+Assert-True ((Get-SshLanFlowSig $a) -ne (Get-SshLanFlowSig $c)) 'a big change restarts them'
+Assert-True ((Get-SshLanFlowSig $a) -ne (Get-SshLanFlowSig @{ State = 'idle'; RxBps = 0; TxBps = 0; Fixed = $false })) 'flow to idle is a change'

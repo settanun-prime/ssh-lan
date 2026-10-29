@@ -46,3 +46,25 @@ Set-MapEdgeFlow 'nic' (& $flow 5000 0)
 Assert-Equal $script:MapFlow['nic'].Line.Opacity 1 'a measured edge is drawn at full strength'
 Assert-Equal (Get-Dots).Count 1 'dots only for the measured edge: 5 KB/s is one dot'
 Set-MapEdgeFlow 'nope' (& $flow 1 1)
+
+# --- what a node says about its traffic (card on hover and side panel) ---
+$t0 = Get-Date '2026-10-29T10:00:00'
+$script:MapFlowPrev = @{ Time = $t0; Ts = @{ box = @{ Rx = 0; Tx = 0; Online = $true } } }
+$script:MapFlowNow = @{ Time = $t0.AddSeconds(2); Ts = @{ box = @{ Rx = 20000; Tx = 0; Online = $true } } }
+$script:MapFlowState = @{
+    nic = @{ State = 'flow'; RxBps = 12000; TxBps = 3000; Fixed = $false; Why = '' }
+    'lan:k1' = @{ State = 'unknown'; RxBps = $null; TxBps = $null; Fixed = $false; Why = 'วัดไม่ได้: ไม่มี SNMP' }
+    'lan:k2' = @{ State = 'offline'; RxBps = $null; TxBps = $null; Fixed = $false; Why = 'ออฟไลน์' }
+    internet = @{ State = 'unknown'; RxBps = $null; TxBps = $null; Fixed = $false; Why = 'วัดไม่ได้: router ไม่ตอบ UPnP' } }
+$self = @{ Key = 'k0'; IsSelf = $true; IsRouter = $false; Names = @() }
+$txt = Get-MapNodeFlowText $self
+Assert-True ($txt -match '12\.0 KB/s' -and $txt -match '3\.0 KB/s') "this PC shows both rates (got: $txt)"
+Assert-True ($txt -match 'ไม่ใช่ของทั้งบ้าน') 'and says whose traffic it is'
+Assert-True ((Get-MapNodeFlowText @{ Key = 'k1'; IsSelf = $false; IsRouter = $false; Names = @() }) -match 'ไม่มี SNMP') 'another device says why it cannot be measured'
+Assert-True ((Get-MapNodeFlowText @{ Key = 'k2'; IsSelf = $false; IsRouter = $false; Names = @() }) -match 'ออฟไลน์') 'an offline device says so'
+Assert-True ((Get-MapNodeFlowText @{ Key = 'r'; IsSelf = $false; IsRouter = $true; Names = @() }) -match 'UPnP') 'the router carries the internet line'
+Assert-True ((Get-MapNodeFlowText @{ Key = 'k9'; IsSelf = $false; IsRouter = $false; Names = @() }) -match 'กำลังวัด') 'no state yet: still measuring'
+$withTs = Get-MapNodeFlowText @{ Key = 'k1'; IsSelf = $false; IsRouter = $false; Names = @(@{ name = 'box'; from = 'Tailscale' }) }
+Assert-True ($withTs -match 'Tailscale ↓ 10\.0 KB/s ↑ 0 B/s') "a Tailscale peer shows its rate (got: $withTs)"
+$script:MapFlowPrev = $null
+Assert-True ((Get-MapNodeFlowText @{ Key = 'k1'; IsSelf = $false; IsRouter = $false; Names = @(@{ name = 'box'; from = 'Tailscale' }) }) -match 'Tailscale.*กำลังวัด') 'Tailscale without two samples: measuring'
