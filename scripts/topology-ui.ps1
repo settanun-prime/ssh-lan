@@ -2,6 +2,7 @@
 # Real data only; the layout is fixed by the data. One motion, one meaning; none when Windows says to reduce motion.
 # Uses app.ps1's $window, $markup, $root, Add-Log, Invoke-Logged
 $script:MapWin = $null
+$script:MapFlow = @{}        # FlowKey -> the drawn line and its dots, so a measurement can start or stop them without a redraw
 $script:MapSeen = @{}        # keys already introduced: a refresh does not replay their entrance
 $script:MapPos = @{}         # key -> last position, so a regroup slides tiles instead of jumping
 $script:MapView = ''         # '' = automatic (link up to 12 devices, groups above)
@@ -88,43 +89,85 @@ function Add-MapEdge($E, [int]$Begin, [bool]$Intro) {
             Add-MapChild $tri 0 0 1
         }
     }
-    # dots only on SSH edges (pair / login / audit graph). Cable and internet stay still — those were the fake ones.
-    # Canvas Left/Top stay 0: DoubleAnimationUsingPath writes absolute path coords into the translate.
-    $runs = if ($E.Style -eq 'ssh') {
-        switch ($E.Dir) { 'out' { @($true) } 'in' { @($false) } default { @($true, $false) } }
-    } elseif ($E.Ssh) { @($true) } else { @() }
-    foreach ($fwd in $runs) {
-        if (-not $motion -or @($E.Points).Count -lt 2) { break }
-        $pts = if ($fwd) { @($E.Points) } else { $r = @($E.Points); [array]::Reverse($r); @($r) }
-        if (@($pts).Count -lt 2) { continue }
-        $fig = New-Object Windows.Media.PathFigure
-        $fig.StartPoint = New-Object Windows.Point ([double]$pts[0][0]), ([double]$pts[0][1])
-        $len = 0.0
-        for ($i = 1; $i -lt $pts.Count; $i++) {
-            $x = [double]$pts[$i][0]; $y = [double]$pts[$i][1]
-            [void]$fig.Segments.Add((New-Object Windows.Media.LineSegment ((New-Object Windows.Point $x, $y), $true)))
-            $len += [Math]::Abs($x - [double]$pts[$i - 1][0]) + [Math]::Abs($y - [double]$pts[$i - 1][1])
-        }
-        if ($len -lt 1) { continue }
-        $geo = New-Object Windows.Media.PathGeometry
-        [void]$geo.Figures.Add($fig)
-        $dot = New-Object Windows.Shapes.Ellipse
-        $sz = if ($E.Live) { 10 } else { 8 }
-        $dot.Width = $sz; $dot.Height = $sz
-        $dot.Fill = New-MapBrush $(if ($E.Live) { '#86EFAC' } else { '#4ADE80' })
-        $dot.Stroke = New-MapBrush '#052E16'; $dot.StrokeThickness = 1
-        $dot.IsHitTestVisible = $false
-        $tt = New-Object Windows.Media.TranslateTransform
-        $dot.RenderTransform = $tt
-        Add-MapChild $dot (-$sz / 2) (-$sz / 2) 4
-        # start now — do not wait for the intro stagger or the dots never feel "live"
-        $ms = [int]([Math]::Max(1400, $len * $(if ($E.Live) { 4 } else { 6 })))
-        foreach ($axis in 'X', 'Y') {
-            $a = New-Object Windows.Media.Animation.DoubleAnimationUsingPath
-            $a.PathGeometry = $geo; $a.Source = $axis
-            $a.Duration = [TimeSpan]::FromMilliseconds($ms)
-            $a.RepeatBehavior = [Windows.Media.Animation.RepeatBehavior]::Forever
-            $tt.BeginAnimation($(if ($axis -eq 'X') { [Windows.Media.TranslateTransform]::XProperty } else { [Windows.Media.TranslateTransform]::YProperty }), $a)
+    #     # a dot only ever follows a measurement (Set-MapEdgeFlow): nothing here runs on its own, so a fresh map is still.
+    # Canvas Left/Top stay 0 for the dots: DoubleAnimationUsingPath writes absolute path coords into the translate.
+    if ($E.FlowKey) {
+        $script:MapFlow[[string]$E.FlowKey] = @{ Edge = $E; Line = $l; Dots = @(); Dash = $dash; Opacity = $opacity; Color = $color }
+        Set-MapEdgeFlow ([string]$E.FlowKey) (Get-SshLanFlowState $E $null $null)
+    }
+}
+
+# the dots of one route: the path the dot follows (forward = From to To, or back) and its length
+function New-MapFlowPath($Points, [bool]$Forward) {
+    $pts = if ($Forward) { @($Points) } else { $r = @($Points); [array]::Reverse($r); @($r) }
+    if (@($pts).Count -lt 2) { return $null }
+    $fig = New-Object Windows.Media.PathFigure
+    $fig.StartPoint = New-Object Windows.Point ([double]$pts[0][0]), ([double]$pts[0][1])
+    $len = 0.0
+    for ($i = 1; $i -lt $pts.Count; $i++) {
+        $x = [double]$pts[$i][0]; $y = [double]$pts[$i][1]
+        [void]$fig.Segments.Add((New-Object Windows.Media.LineSegment ((New-Object Windows.Point $x, $y), $true)))
+        $len += [Math]::Abs($x - [double]$pts[$i - 1][0]) + [Math]::Abs($y - [double]$pts[$i - 1][1])
+    }
+    if ($len -lt 1) { return $null }
+    $geo = New-Object Windows.Media.PathGeometry
+    [void]$geo.Figures.Add($fig)
+    return @{ Geo = $geo; Len = $len }
+}
+
+# put one edge into the state a measurement gave it (Get-SshLanFlowState): flow = dots run, offline = faint, anything else = still.
+# Rx runs along the edge (From to To, router to device), Tx back; a fixed-speed line (SSH) follows its Dir
+function Set-MapEdgeFlow([string]$FlowKey, $State) {
+    $f = $script:MapFlow[$FlowKey]
+    if (-not $f) { return }
+    $canvas = Find-Map 'MapCanvas'
+    foreach ($d in @($f.Dots)) {
+        foreach ($p in [Windows.Media.TranslateTransform]::XProperty, [Windows.Media.TranslateTransform]::YProperty) { $d.Tt.BeginAnimation($p, $null) }
+        $canvas.Children.Remove($d.El)
+    }
+    $f.Dots = @()
+    $l = $f.Line
+    $l.BeginAnimation([Windows.UIElement]::OpacityProperty, $null)
+    # an end that is down wins over any measurement: nothing runs to a machine that is off
+    $kind = if ($f.Edge.Online -eq $false) { 'offline' } else { [string]$State.State }
+    if ($kind -eq 'offline') {
+        $l.StrokeDashArray = [Windows.Media.DoubleCollection]::Parse('1,4'); $l.Opacity = 0.35
+    } else {
+        if ($f.Dash) { $l.StrokeDashArray = [Windows.Media.DoubleCollection]::Parse($f.Dash) } else { $l.ClearValue([Windows.Shapes.Shape]::StrokeDashArrayProperty) }
+        $l.Opacity = $f.Opacity
+    }
+    if ($kind -ne 'flow' -or -not (Test-MapMotion)) { return }
+    $runs = @()
+    if ($State.Fixed) {
+        $spec = @{ Dots = 1; Ms = 2000 }
+        if ($f.Edge.Dir -in 'out', 'both') { $runs += @{ Fwd = $true; Spec = $spec } }
+        if ($f.Edge.Dir -in 'in', 'both') { $runs += @{ Fwd = $false; Spec = $spec } }
+    } else {
+        $rx = ConvertTo-SshLanDotSpec ([double]$State.RxBps)
+        $tx = ConvertTo-SshLanDotSpec ([double]$State.TxBps)
+        if ($rx.Dots) { $runs += @{ Fwd = $true; Spec = $rx } }
+        if ($tx.Dots) { $runs += @{ Fwd = $false; Spec = $tx } }
+    }
+    $fill = if ($f.Edge.Style -eq 'ssh') { '#86EFAC' } else { '#8FB8FF' }
+    foreach ($run in $runs) {
+        $path = New-MapFlowPath $f.Edge.Points $run.Fwd
+        if (-not $path) { continue }
+        for ($k = 0; $k -lt $run.Spec.Dots; $k++) {
+            $dot = New-Object Windows.Shapes.Ellipse
+            $dot.Width = 9; $dot.Height = 9; $dot.Fill = New-MapBrush $fill
+            $dot.Stroke = New-MapBrush '#0B1220'; $dot.StrokeThickness = 1; $dot.IsHitTestVisible = $false
+            $tt = New-Object Windows.Media.TranslateTransform
+            $dot.RenderTransform = $tt
+            Add-MapChild $dot -4.5 -4.5 4
+            foreach ($axis in 'X', 'Y') {
+                $a = New-Object Windows.Media.Animation.DoubleAnimationUsingPath
+                $a.PathGeometry = $path.Geo; $a.Source = $axis
+                $a.Duration = [TimeSpan]::FromMilliseconds($run.Spec.Ms)
+                $a.BeginTime = [TimeSpan]::FromMilliseconds([int]($k * $run.Spec.Ms / $run.Spec.Dots))
+                $a.RepeatBehavior = [Windows.Media.Animation.RepeatBehavior]::Forever
+                $tt.BeginAnimation($(if ($axis -eq 'X') { [Windows.Media.TranslateTransform]::XProperty } else { [Windows.Media.TranslateTransform]::YProperty }), $a)
+            }
+            $f.Dots += @{ El = $dot; Tt = $tt }
         }
     }
 }
@@ -1042,6 +1085,7 @@ function Show-MapLayout {
     Stop-MapHover
     $canvas.Children.Clear()
     $script:MapEls = @{}
+    $script:MapFlow = @{}
     $script:MapTempBadges = New-Object System.Collections.Generic.List[object]
     $nodes = @($script:MapModel.Nodes)
     (Find-Map 'MapEmpty').Text = 'ยังไม่พบเครื่อง กดสแกนใหม่'
