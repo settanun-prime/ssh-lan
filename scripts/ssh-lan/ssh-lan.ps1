@@ -1361,6 +1361,7 @@ function Start-SshLanTui {
 . (Join-Path $PSScriptRoot 'router.ps1')
 . (Join-Path $PSScriptRoot 'audit.ps1')
 . (Join-Path $PSScriptRoot 'topology.ps1')
+. (Join-Path $PSScriptRoot 'traffic.ps1')
 . (Join-Path $PSScriptRoot 'control.ps1')
 
 # --- entry (ข้ามเมื่อ UI dot-source ฟังก์ชันเข้ามา) ---
