@@ -24,34 +24,37 @@ Assert-True ((ConvertTo-SshLanDotSpec 1e9).Ms -ge 1200) 'ms never below 1200'
 
 # --- flow state of one edge ---
 $t0 = Get-Date '2026-10-29T10:00:00'
-function New-Sample($Seconds, $Rx, $Tx, [string[]]$Live = @()) { @{ Time = $t0.AddSeconds($Seconds); NicRx = $Rx; NicTx = $Tx; SshLive = $Live } }
+function New-Sample($Seconds, $Rx, $Tx, [string[]]$Live = @(), [string]$Nic = 'eth0') { @{ Time = $t0.AddSeconds($Seconds); NicRx = $Rx; NicTx = $Tx; NicId = $Nic; SshLive = $Live } }
+# the state as seen a second after the newest sample (a sample older than 10 s is not a measurement any more)
+function FS($e, $p, $c) { Get-SshLanFlowState $e $p $c ($c.Time.AddSeconds(1)) }
 $nic = @{ FlowKey = 'nic'; Online = $true; PeerIp = '' }
 $prev = New-Sample 0 1000 1000
-$st = Get-SshLanFlowState $nic $null (New-Sample 2 21000 1000)
+$st = FS $nic $null (New-Sample 2 21000 1000)
 Assert-Equal $st.State 'unknown' 'first sample is measuring'
 Assert-True ($st.Why -match 'กำลังวัด') 'and says so'
-$st = Get-SshLanFlowState $nic $prev (New-Sample 2 21000 1000)
+$st = FS $nic $prev (New-Sample 2 21000 1000)
 Assert-Equal $st.State 'flow' 'nic flow'
 Assert-Equal $st.RxBps 10000 'nic rx rate'
 Assert-Equal $st.TxBps 0 'nic tx rate'
-Assert-Equal (Get-SshLanFlowState $nic $prev (New-Sample 2 1100 1000)).State 'idle' 'nic idle under the threshold'
-Assert-Equal (Get-SshLanFlowState $nic $prev (New-Sample 2 $null $null)).State 'unknown' 'adapter gone gives unknown'
-Assert-Equal (Get-SshLanFlowState $nic $prev (New-Sample 2 10 10)).State 'unknown' 'counter reset gives unknown'
-$lan = Get-SshLanFlowState @{ FlowKey = 'lan:02-00-00-00-00-01'; Online = $true; PeerIp = '' } $prev (New-Sample 2 5 5)
+Assert-Equal (FS $nic $prev (New-Sample 2 1100 1000)).State 'idle' 'nic idle under the threshold'
+Assert-Equal (FS $nic $prev (New-Sample 2 $null $null)).State 'unknown' 'adapter gone gives unknown'
+Assert-Equal (FS $nic $prev (New-Sample 2 10 10)).State 'unknown' 'counter reset gives unknown'
+$lan = FS @{ FlowKey = 'lan:02-00-00-00-00-01'; Online = $true; PeerIp = '' } $prev (New-Sample 2 5 5)
 Assert-Equal $lan.State 'unknown' 'a lan cable cannot be measured'
 Assert-True ($lan.Why -match 'SNMP') 'and says why'
-$net = Get-SshLanFlowState @{ FlowKey = 'internet'; Online = $true; PeerIp = '' } $prev (New-Sample 2 5 5)
+$net = FS @{ FlowKey = 'internet'; Online = $true; PeerIp = '' } $prev (New-Sample 2 5 5)
 Assert-Equal $net.State 'unknown' 'the internet line cannot be measured'
 Assert-True ($net.Why -match 'UPnP') 'and says why'
-Assert-Equal (Get-SshLanFlowState @{ FlowKey = 'lan:x'; Online = $false; PeerIp = '' } $prev (New-Sample 2 5 5)).State 'offline' 'offline cable'
+Assert-Equal (FS @{ FlowKey = 'lan:x'; Online = $false; PeerIp = '' } $prev (New-Sample 2 5 5)).State 'offline' 'offline cable'
 $sshOff = @{ FlowKey = 'ssh:a>b'; Online = $false; PeerIp = '10.0.0.5' }
-Assert-Equal (Get-SshLanFlowState $sshOff $prev (New-Sample 2 5 5 '10.0.0.5')).State 'offline' 'offline beats live ssh'
+Assert-Equal (FS $sshOff $prev (New-Sample 2 5 5 '10.0.0.5')).State 'offline' 'offline beats live ssh'
 $ssh = @{ FlowKey = 'ssh:a>b'; Online = $true; PeerIp = '10.0.0.5' }
-$st = Get-SshLanFlowState $ssh $prev (New-Sample 2 5 5 '10.0.0.5')
+$st = FS $ssh $prev (New-Sample 2 5 5 '10.0.0.5')
 Assert-Equal $st.State 'flow' 'ssh live from sockets'
 Assert-True $st.Fixed 'ssh dots run at a fixed speed'
-Assert-Equal (Get-SshLanFlowState $ssh $prev (New-Sample 2 5 5 '10.0.0.9')).State 'idle' 'ssh without a session is idle'
-Assert-Equal (Get-SshLanFlowState @{ FlowKey = 'ssh:a>b'; Online = $true; PeerIp = '' } $prev (New-Sample 2 5 5)).State 'unknown' 'ssh between two other machines is unknown'
+Assert-Equal (FS $ssh $prev (New-Sample 2 5 5 '10.0.0.9')).State 'idle' 'ssh without a session is idle'
+Assert-True ((FS $ssh $prev (New-Sample 2 5 5 '10.0.0.9')).Why -match 'ไม่เห็น session') 'and does not claim there is none anywhere (it may run over another address)'
+Assert-Equal (FS @{ FlowKey = 'ssh:a>b'; Online = $true; PeerIp = '' } $prev (New-Sample 2 5 5)).State 'unknown' 'ssh between two other machines is unknown'
 
 # --- counters: Tailscale per-peer bytes, sockets that mean "an SSH session is open", the NIC ---
 $json = '{"Self":{"HostName":"me","RxBytes":1,"TxBytes":2},"Peer":{"nodekey:a":{"HostName":"localhost","DNSName":"box.example.ts.net.","RxBytes":2000,"TxBytes":500,"Online":true},"nodekey:b":{"HostName":"phone","DNSName":"phone.example.ts.net.","RxBytes":0,"TxBytes":0,"Online":false}}}'
@@ -91,3 +94,17 @@ $c = @{ State = 'flow'; RxBps = 2000000; TxBps = 0; Fixed = $false }
 Assert-Equal (Get-SshLanFlowSig $a) (Get-SshLanFlowSig $b) 'a small change in rate keeps the dots as they are'
 Assert-True ((Get-SshLanFlowSig $a) -ne (Get-SshLanFlowSig $c)) 'a big change restarts them'
 Assert-True ((Get-SshLanFlowSig $a) -ne (Get-SshLanFlowSig @{ State = 'idle'; RxBps = 0; TxBps = 0; Fixed = $false })) 'flow to idle is a change'
+# --- review fixes: an adapter swap is not a rate, and an old sample is not a measurement ---
+$wifi = New-Sample 0 1000000000 1000 @() 'wifi'
+$eth = New-Sample 2 50000000000 1000 @() 'eth'
+$st = FS $nic $wifi $eth
+Assert-Equal $st.State 'unknown' 'a different adapter between two reads gives no rate (not 24 GB/s)'
+Assert-True ($st.Why -match 'การ์ดเน็ต') 'and says the adapter changed'
+Assert-Equal (FS $nic (New-Sample 0 1000 1000 @() 'eth') (New-Sample 2 21000 1000 @() 'eth')).State 'flow' 'the same adapter twice is a rate'
+$cur = New-Sample 2 21000 1000
+Assert-Equal (Get-SshLanFlowState $nic $prev $cur $cur.Time.AddSeconds(30)).State 'unknown' 'a sample 30 s old is not a measurement'
+Assert-True ((Get-SshLanFlowState $nic $prev $cur $cur.Time.AddSeconds(30)).Why -match 'เก่า') 'and says why'
+Assert-Equal (Get-SshLanFlowState $ssh $prev (New-Sample 2 5 5 '10.0.0.5') $cur.Time.AddSeconds(30)).State 'unknown' 'a live ssh socket list 30 s old is not either'
+Assert-Equal (Get-SshLanFlowState $nic $prev $cur $cur.Time.AddSeconds(5)).State 'flow' 'five seconds old is still fine'
+Assert-True ((Get-SshLanNicCounters '127.0.0.1').Id) 'the adapter id comes with the counters'
+Assert-True ($real.NicId) 'a real sample names its adapter'

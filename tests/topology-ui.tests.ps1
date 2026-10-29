@@ -63,7 +63,11 @@ Assert-True ($txt -match 'ไม่ใช่ของทั้งบ้าน') 
 Assert-True ((Get-MapNodeFlowText @{ Key = 'k1'; IsSelf = $false; IsRouter = $false; Names = @() }) -match 'ไม่มี SNMP') 'another device says why it cannot be measured'
 Assert-True ((Get-MapNodeFlowText @{ Key = 'k2'; IsSelf = $false; IsRouter = $false; Names = @() }) -match 'ออฟไลน์') 'an offline device says so'
 Assert-True ((Get-MapNodeFlowText @{ Key = 'r'; IsSelf = $false; IsRouter = $true; Names = @() }) -match 'UPnP') 'the router carries the internet line'
-Assert-True ((Get-MapNodeFlowText @{ Key = 'k9'; IsSelf = $false; IsRouter = $false; Names = @() }) -match 'กำลังวัด') 'no state yet: still measuring'
+Assert-True ((Get-MapNodeFlowText @{ Key = 'k9'; IsSelf = $false; IsRouter = $false; Names = @() }) -match 'SNMP') 'a device with no state yet still says why it cannot be measured (group view draws no lines)'
+Assert-True ((Get-MapNodeFlowText @{ Key = 'k8'; IsSelf = $false; IsRouter = $false; Online = $false; Names = @() }) -match 'ออฟไลน์') 'an offline device with no state says offline'
+$script:MapFlowState = @{}
+Assert-True ((Get-MapNodeFlowText $self) -match 'กำลังวัด') 'this PC with no sample yet: still measuring'
+$script:MapFlowState = @{ nic = @{ State = 'flow'; RxBps = 12000; TxBps = 3000; Fixed = $false; Why = '' } }
 $withTs = Get-MapNodeFlowText @{ Key = 'k1'; IsSelf = $false; IsRouter = $false; Names = @(@{ name = 'box'; from = 'Tailscale' }) }
 Assert-True ($withTs -match 'Tailscale ↓ 10\.0 KB/s ↑ 0 B/s') "a Tailscale peer shows its rate (got: $withTs)"
 $script:MapFlowPrev = $null
@@ -73,3 +77,37 @@ function Test-MapMotion { $false }
 Set-MapEdgeFlow 'nic' (& $flow 5000000 5000000)
 Assert-Equal (Get-Dots).Count 0 'with animations off a flowing line draws no dots'
 function Test-MapMotion { $true }
+# --- review fixes ---
+$script:TestCanvas.Children.Clear(); $script:MapFlow = @{}
+Add-MapEdge (New-TestEdge 'nic' 'wired' $true) 0 $false
+Set-MapEdgeFlow 'nic' (& $flow 2000000 0)
+$kept = @($script:MapFlow['nic'].Dots)
+Assert-Equal $kept.Count 3 'three dots to follow'
+Assert-Equal @($kept | Where-Object { $_.Begin -gt 0 }).Count 0 'dots start mid-trip: none rests at the corner waiting for its turn'
+Assert-Equal @($kept | Where-Object { -not $_.Fwd }).Count 0 'download only: every dot runs router to device'
+Set-MapEdgeFlow 'nic' (& $flow 0 2000000)
+Assert-Equal @($script:MapFlow['nic'].Dots | Where-Object { $_.Fwd }).Count 0 'upload only: every dot runs back'
+Set-MapEdgeFlow 'nic' (& $flow 2000000 0)
+$kept = @($script:MapFlow['nic'].Dots)
+Stop-MapFlowDots
+Assert-Equal @($kept | Where-Object { $_.Tt.HasAnimatedProperties }).Count 0 'before a redraw every dot clock is stopped (a forever clock left behind keeps ticking)'
+
+# this PC's card and the internet card have their state even when the view draws no lines (group view)
+$script:MapLayout = $null; $script:MapFlowPrev = $null; $script:MapFlowNow = $null; $script:MapFlowState = @{}
+$stamp = Get-Date
+Add-MapFlowSample @{ Time = $stamp.AddSeconds(-2); NicId = 'e'; NicRx = 1000; NicTx = 0; SshLive = @() }
+Add-MapFlowSample @{ Time = $stamp; NicId = 'e'; NicRx = 21000; NicTx = 0; SshLive = @() }
+Assert-Equal $script:MapFlowState['nic'].State 'flow' 'this PC has its state with no layout'
+Assert-Equal $script:MapFlowState['internet'].State 'unknown' 'the internet line likewise'
+
+# nothing new for a minute: the dots stop, they do not keep running on the last sample
+$script:TestCanvas.Children.Clear(); $script:MapFlow = @{}
+$edge = New-TestEdge 'nic' 'wired' $true
+$script:MapLayout = @{ Edges = @($edge) }
+Add-MapEdge $edge 0 $false
+Add-MapFlowSample @{ Time = (Get-Date).AddSeconds(-2); NicId = 'e'; NicRx = 21000; NicTx = 0; SshLive = @() }
+Add-MapFlowSample @{ Time = (Get-Date); NicId = 'e'; NicRx = 4021000; NicTx = 0; SshLive = @() }
+Assert-True ((Get-Dots).Count -ge 1) 'a fresh sample: dots run'
+Update-MapFlowStates ((Get-Date).AddSeconds(60))
+Assert-Equal (Get-Dots).Count 0 'a minute without a new sample: the dots stop'
+Assert-Equal $script:MapFlowState['nic'].State 'unknown' 'and the card says unknown, not the old rate'

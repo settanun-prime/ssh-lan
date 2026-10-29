@@ -165,11 +165,13 @@ function Set-MapEdgeFlow([string]$FlowKey, $State) {
                 $a = New-Object Windows.Media.Animation.DoubleAnimationUsingPath
                 $a.PathGeometry = $path.Geo; $a.Source = $axis
                 $a.Duration = [TimeSpan]::FromMilliseconds($run.Spec.Ms)
-                $a.BeginTime = [TimeSpan]::FromMilliseconds([int]($k * $run.Spec.Ms / $run.Spec.Dots))
+                # dot k starts k/n of the trip in, now: a positive delay would leave it resting at the canvas corner until its turn
+                $begin = -[int]($k * $run.Spec.Ms / $run.Spec.Dots)
+                $a.BeginTime = [TimeSpan]::FromMilliseconds($begin)
                 $a.RepeatBehavior = [Windows.Media.Animation.RepeatBehavior]::Forever
                 $tt.BeginAnimation($(if ($axis -eq 'X') { [Windows.Media.TranslateTransform]::XProperty } else { [Windows.Media.TranslateTransform]::YProperty }), $a)
             }
-            $f.Dots += @{ El = $dot; Tt = $tt }
+            $f.Dots += @{ El = $dot; Tt = $tt; Fwd = [bool]$run.Fwd; Begin = $begin }
         }
     }
 }
@@ -923,7 +925,7 @@ function Start-MapTempClock {
 
 # --- live traffic: one sample every 2.5 s in a runspace of its own, then each line takes the state its measurement gave ---
 $script:MapFlowPrev = $null; $script:MapFlowNow = $null; $script:MapFlowState = @{}
-$script:MapFlowRs = $null; $script:MapFlowPs = $null; $script:MapFlowReady = $false; $script:MapFlowLast = [datetime]::MinValue
+$script:MapFlowRs = $null; $script:MapFlowPs = $null; $script:MapFlowReady = $false; $script:MapFlowLast = [datetime]::MinValue; $script:MapFlowSwept = [datetime]::MinValue
 
 function Format-MapRate($Bps) {
     if ($null -eq $Bps) { return '-' }
@@ -937,6 +939,11 @@ function Format-MapRate($Bps) {
 function Get-MapNodeFlowText($Node) {
     $key = if ($Node.IsSelf) { 'nic' } elseif ($Node.IsRouter) { 'internet' } else { "lan:$($Node.Key)" }
     $st = $script:MapFlowState[$key]
+    # a device card needs no sample to say "cannot be measured" or "offline": the group view draws no lines, so no state is ever stored for it
+    if (-not $st -and $key -like 'lan:*') {
+        $st = if ($Node.InLan -eq $false) { @{ State = 'unknown'; Why = 'อยู่นอกวง LAN วัดได้เฉพาะตัวเลข Tailscale' } }
+              else { Get-SshLanFlowState @{ FlowKey = $key; Online = ($Node.Online -ne $false); PeerIp = '' } $null $null }
+    }
     $lines = @()
     if (-not $st) { $lines += 'ทราฟฟิก: กำลังวัด' }
     elseif ($st.State -in 'flow', 'idle') { $lines += "ทราฟฟิก ↓ $(Format-MapRate $st.RxBps) ↑ $(Format-MapRate $st.TxBps) · การ์ดเน็ตของเครื่องนี้ (ไม่ใช่ของทั้งบ้าน)" }
@@ -956,13 +963,32 @@ function Get-MapNodeFlowText($Node) {
 function Add-MapFlowSample($Sample) {
     $script:MapFlowPrev = $script:MapFlowNow
     $script:MapFlowNow = $Sample
+    Update-MapFlowStates
+}
+
+# every state re-read against the newest sample and the clock. Also runs when no sample arrives, so a stopped sampler stops the dots.
+# This PC's card and the internet card are always kept (the group view draws no lines, the cards still read them)
+function Update-MapFlowStates([datetime]$Now = (Get-Date)) {
+    foreach ($c in @{ FlowKey = 'nic'; Online = $true; PeerIp = '' }, @{ FlowKey = 'internet'; Online = $true; PeerIp = '' }) {
+        $script:MapFlowState[$c.FlowKey] = Get-SshLanFlowState $c $script:MapFlowPrev $script:MapFlowNow $Now
+    }
     if (-not $script:MapLayout) { return }
     foreach ($e in @($script:MapLayout.Edges)) {
         if (-not $e.FlowKey) { continue }
-        $st = Get-SshLanFlowState $e $script:MapFlowPrev $script:MapFlowNow
+        $st = Get-SshLanFlowState $e $script:MapFlowPrev $script:MapFlowNow $Now
         $script:MapFlowState[[string]$e.FlowKey] = $st
         $f = $script:MapFlow[[string]$e.FlowKey]
         if ($f -and $f.Sig -ne (Get-SshLanFlowSig $st)) { Set-MapEdgeFlow ([string]$e.FlowKey) $st }
+    }
+}
+
+# a forever-running dot clock stays alive in WPF after its element leaves the canvas: stop them before a redraw drops the elements
+function Stop-MapFlowDots {
+    foreach ($f in @($script:MapFlow.Values)) {
+        foreach ($d in @($f.Dots)) {
+            foreach ($p in [Windows.Media.TranslateTransform]::XProperty, [Windows.Media.TranslateTransform]::YProperty) { $d.Tt.BeginAnimation($p, $null) }
+        }
+        $f.Dots = @()
     }
 }
 
@@ -977,6 +1003,11 @@ function Stop-MapFlowRead {
 function Update-MapFlow {
     if (-not $script:MapWin) { return }
     $now = Get-Date
+    # no new sample for over 10 s (tab hidden, reads failing): re-read the states so the dots stop instead of running on the last one
+    if ($script:MapFlowNow -and ($now - [datetime]$script:MapFlowNow.Time).TotalSeconds -gt 10 -and ($now - $script:MapFlowSwept).TotalSeconds -gt 2) {
+        $script:MapFlowSwept = $now
+        Update-MapFlowStates $now
+    }
     if ($script:MapFlowPs) {
         if ($script:MapFlowHandle.IsCompleted) {
             try { $s = @($script:MapFlowPs.EndInvoke($script:MapFlowHandle))[0]; if ($s) { $script:MapFlowReady = $true; Add-MapFlowSample $s } } catch { }
@@ -1183,6 +1214,7 @@ function Update-MapModel {
 function Show-MapLayout {
     $canvas = Find-Map 'MapCanvas'
     Stop-MapHover
+    Stop-MapFlowDots
     $canvas.Children.Clear()
     $script:MapEls = @{}
     $script:MapFlow = @{}

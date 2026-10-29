@@ -22,19 +22,25 @@ function ConvertTo-SshLanDotSpec([double]$Bps) {
 
 # $Edge = @{ FlowKey; Online; PeerIp }, $Prev / $Cur = @{ Time; NicRx; NicTx; SshLive }
 # State: flow (a counter went up), idle (measured, nothing moving), unknown (nothing can measure it), offline (an end is down)
-function Get-SshLanFlowState($Edge, $Prev, $Cur) {
+function Get-SshLanFlowState($Edge, $Prev, $Cur, [datetime]$Now = (Get-Date)) {
     $r = { param($state, $why, $rx, $tx, $fixed) @{ State = $state; RxBps = $rx; TxBps = $tx; Fixed = [bool]$fixed; Why = $why } }
     $key = [string]$Edge.FlowKey
+    # a sample older than 10 s (sampler stopped, tab hidden, reads failing) is not a measurement: nothing keeps running on it
+    $stale = [bool]($Cur -and ($Now - [datetime]$Cur.Time).TotalSeconds -gt 10)
     if ($Edge.Online -eq $false) { return & $r 'offline' 'ออฟไลน์' $null $null $false }
     if ($key -eq 'internet') { return & $r 'unknown' 'วัดไม่ได้: router ไม่ตอบ UPnP' $null $null $false }
     if ($key -like 'lan:*') { return & $r 'unknown' 'วัดไม่ได้: ไม่มี SNMP' $null $null $false }
     if ($key -like 'ssh:*') {
         if (-not [string]$Edge.PeerIp) { return & $r 'unknown' 'วัดสดไม่ได้: ใช้หลักฐานจาก audit' $null $null $false }
         if (-not $Cur) { return & $r 'unknown' 'กำลังวัด' $null $null $false }
+        if ($stale) { return & $r 'unknown' 'ข้อมูลเก่าเกินไป รอตัวอย่างใหม่' $null $null $false }
         if (@($Cur.SshLive) -contains [string]$Edge.PeerIp) { return & $r 'flow' 'มี session เปิดอยู่' $null $null $true }
-        return & $r 'idle' 'ไม่มี session เปิดอยู่' $null $null $false
+        return & $r 'idle' 'ไม่เห็น session บนที่อยู่ LAN ของเครื่องนั้น' $null $null $false
     }
     if (-not $Prev -or -not $Cur) { return & $r 'unknown' 'กำลังวัด' $null $null $false }
+    if ($stale) { return & $r 'unknown' 'ข้อมูลเก่าเกินไป รอตัวอย่างใหม่' $null $null $false }
+    # two reads from two different adapters are not a rate (Wi-Fi to Ethernet, or the primary address moving to a virtual card)
+    if ([string]$Prev.NicId -ne [string]$Cur.NicId) { return & $r 'unknown' 'การ์ดเน็ตเปลี่ยน รอรอบหน้า' $null $null $false }
     $secs = ([datetime]$Cur.Time - [datetime]$Prev.Time).TotalSeconds
     $rx = Get-SshLanRate $Prev.NicRx $Cur.NicRx $secs
     $tx = Get-SshLanRate $Prev.NicTx $Cur.NicTx $secs
@@ -53,7 +59,7 @@ function Get-SshLanNicCounters([string]$Ip) {
         foreach ($n in [Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces()) {
             if (-not @($n.GetIPProperties().UnicastAddresses | Where-Object { $_.Address.ToString() -eq $Ip }).Count) { continue }
             $s = $n.GetIPv4Statistics()
-            return @{ Rx = [uint64]$s.BytesReceived; Tx = [uint64]$s.BytesSent }
+            return @{ Id = [string]$n.Id; Rx = [uint64]$s.BytesReceived; Tx = [uint64]$s.BytesSent }
         }
     } catch { }
     return $null
@@ -102,7 +108,7 @@ function Read-SshLanTrafficSample([string]$LanIp, [string]$TailscaleExe = (Get-S
     $ts = @{}
     if ($TailscaleExe) { try { $ts = ConvertFrom-SshLanTailscaleCounters ((& $TailscaleExe status --json 2>$null) | Out-String) } catch { } }
     return @{
-        Time = Get-Date; NicRx = $(if ($nic) { $nic.Rx } else { $null }); NicTx = $(if ($nic) { $nic.Tx } else { $null })
+        Time = Get-Date; NicId = $(if ($nic) { $nic.Id } else { $null }); NicRx = $(if ($nic) { $nic.Rx } else { $null }); NicTx = $(if ($nic) { $nic.Tx } else { $null })
         SshLive = @(Get-SshLanLivePeers $conns ($ports | Select-Object -Unique) $selfIps); Ts = $ts
     }
 }
