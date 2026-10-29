@@ -52,3 +52,35 @@ Assert-Equal $st.State 'flow' 'ssh live from sockets'
 Assert-True $st.Fixed 'ssh dots run at a fixed speed'
 Assert-Equal (Get-SshLanFlowState $ssh $prev (New-Sample 2 5 5 '10.0.0.9')).State 'idle' 'ssh without a session is idle'
 Assert-Equal (Get-SshLanFlowState @{ FlowKey = 'ssh:a>b'; Online = $true; PeerIp = '' } $prev (New-Sample 2 5 5)).State 'unknown' 'ssh between two other machines is unknown'
+
+# --- counters: Tailscale per-peer bytes, sockets that mean "an SSH session is open", the NIC ---
+$json = '{"Self":{"HostName":"me","RxBytes":1,"TxBytes":2},"Peer":{"nodekey:a":{"HostName":"localhost","DNSName":"box.example.ts.net.","RxBytes":2000,"TxBytes":500,"Online":true},"nodekey:b":{"HostName":"phone","DNSName":"phone.example.ts.net.","RxBytes":0,"TxBytes":0,"Online":false}}}'
+$ts = ConvertFrom-SshLanTailscaleCounters $json
+Assert-Equal @($ts.Keys).Count 2 'two peers, this PC left out'
+Assert-Equal $ts['box'].Rx 2000 'a peer named localhost is read by its DNS name'
+Assert-Equal $ts['box'].Tx 500 'tx kept'
+Assert-Equal $ts['phone'].Online $false 'online flag kept'
+Assert-True (-not $ts.ContainsKey('me')) 'self excluded'
+Assert-Equal @((ConvertFrom-SshLanTailscaleCounters 'not json').Keys).Count 0 'bad json gives empty'
+Assert-Equal @((ConvertFrom-SshLanTailscaleCounters '').Keys).Count 0 'empty text gives empty'
+$r = Get-SshLanTsRate @{ box = @{ Rx = 1000; Tx = 100 } } @{ box = @{ Rx = 11000; Tx = 100 } } 'box' 2
+Assert-Equal $r.Rx 5000 'ts rx rate'
+Assert-Equal $r.Tx 0 'ts tx rate'
+Assert-Equal (Get-SshLanTsRate @{} @{ box = @{ Rx = 1; Tx = 1 } } 'box' 2) $null 'peer missing in the first read'
+$conns = @(
+    [pscustomobject]@{ LocalAddress = '10.0.0.2'; LocalPort = 51000; RemoteAddress = '10.0.0.5'; RemotePort = 22 }
+    [pscustomobject]@{ LocalAddress = '10.0.0.2'; LocalPort = 22; RemoteAddress = '10.0.0.6'; RemotePort = 40000 }
+    [pscustomobject]@{ LocalAddress = '10.0.0.2'; LocalPort = 51001; RemoteAddress = '10.0.0.7'; RemotePort = 8021 }
+    [pscustomobject]@{ LocalAddress = '10.0.0.2'; LocalPort = 51002; RemoteAddress = '10.0.0.2'; RemotePort = 22 }
+    [pscustomobject]@{ LocalAddress = '127.0.0.1'; LocalPort = 51003; RemoteAddress = '127.0.0.1'; RemotePort = 22 }
+    [pscustomobject]@{ LocalAddress = '10.0.0.2'; LocalPort = 51004; RemoteAddress = '10.0.0.8'; RemotePort = 443 })
+$live = @(Get-SshLanLivePeers $conns @(22, 8021) @('10.0.0.2'))
+Assert-Equal ($live -join ',') '10.0.0.5,10.0.0.6,10.0.0.7' 'out, in and a paired port count; self, loopback and other ports do not'
+Assert-Equal @(Get-SshLanLivePeers @() @(22) @()).Count 0 'no connections'
+Assert-Equal (Get-SshLanNicCounters '192.0.2.250') $null 'no adapter holds that address'
+Assert-True ($null -ne (Get-SshLanNicCounters '127.0.0.1')) 'loopback counters are readable'
+$real = Read-SshLanTrafficSample (Get-SshLanPrimaryLanIp)
+Assert-True ($real.NicRx -is [ValueType]) 'real sample: rx counter is a number'
+Assert-True (((Get-Date) - $real.Time).TotalSeconds -lt 5) 'real sample: stamped now'
+$none = Read-SshLanTrafficSample '127.0.0.1' ''
+Assert-Equal @($none.Ts.Keys).Count 0 'no tailscale.exe gives no peers'

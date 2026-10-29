@@ -191,7 +191,7 @@ Nothing about your machines is hard-coded. A client finds the server by itself: 
 
 ## Version
 
-Current version: **0.6.35** (adds the network map; 0.5.0 added the security audit, 0.4.0 inviting machines, 0.3.0 added the LAN scanner and device control, 0.2.0 pairing and macOS, 0.1.0 was the first release). The **รีเฟรช** button in the window header reopens the app on the code in its folder; when `VERSION` there is newer than the running window it turns yellow and reads **อัปเดตเป็น vX** (checked every 10 seconds, an admin window comes back as admin). The version lives in [`VERSION`](VERSION) and is shown in the window title, the Linux menu and the built exe's file properties. Change that file (and the version in `scripts/app.manifest`) to release a new one.
+Current version: **0.6.36** (adds the network map; 0.5.0 added the security audit, 0.4.0 inviting machines, 0.3.0 added the LAN scanner and device control, 0.2.0 pairing and macOS, 0.1.0 was the first release). The **รีเฟรช** button in the window header reopens the app on the code in its folder; when `VERSION` there is newer than the running window it turns yellow and reads **อัปเดตเป็น vX** (checked every 10 seconds, an admin window comes back as admin). The version lives in [`VERSION`](VERSION) and is shown in the window title, the Linux menu and the built exe's file properties. Change that file (and the version in `scripts/app.manifest`) to release a new one.
 
 ## Security notes
 

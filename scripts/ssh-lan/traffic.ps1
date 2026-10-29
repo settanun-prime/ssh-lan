@@ -43,3 +43,66 @@ function Get-SshLanFlowState($Edge, $Prev, $Cur) {
     if ($top -ge $script:SshLanFlowMinBps) { return & $r 'flow' '' $rx $tx $false }
     return & $r 'idle' 'ไม่มีข้อมูลวิ่ง' $rx $tx $false
 }
+
+
+# --- readers: each one returns $null or empty when it cannot read, never throws ---
+
+# rx / tx byte counters of the adapter that holds $Ip (no admin needed), or $null
+function Get-SshLanNicCounters([string]$Ip) {
+    try {
+        foreach ($n in [Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces()) {
+            if (-not @($n.GetIPProperties().UnicastAddresses | Where-Object { $_.Address.ToString() -eq $Ip }).Count) { continue }
+            $s = $n.GetIPv4Statistics()
+            return @{ Rx = [uint64]$s.BytesReceived; Tx = [uint64]$s.BytesSent }
+        }
+    } catch { }
+    return $null
+}
+
+# `tailscale status --json` -> name -> @{ Rx; Tx; Online } for every peer but this PC; the name follows Get-SshLanTailscalePeers
+function ConvertFrom-SshLanTailscaleCounters([string]$Json) {
+    $out = @{}
+    if (-not $Json -or -not $Json.Trim()) { return $out }
+    try { $st = $Json | ConvertFrom-Json } catch { return $out }
+    if (-not $st -or -not $st.Peer) { return $out }
+    foreach ($p in $st.Peer.PSObject.Properties.Value) {
+        $name = if ($p.HostName -and $p.HostName -ne 'localhost') { [string]$p.HostName } else { [string](([string]$p.DNSName) -split '\.')[0] }
+        if ($name) { $out[$name] = @{ Rx = $p.RxBytes; Tx = $p.TxBytes; Online = [bool]$p.Online } }
+    }
+    return $out
+}
+
+function Get-SshLanTsRate([hashtable]$Prev, [hashtable]$Cur, [string]$Name, [double]$Seconds) {
+    if (-not $Prev -or -not $Cur -or -not $Prev.ContainsKey($Name) -or -not $Cur.ContainsKey($Name)) { return $null }
+    $rx = Get-SshLanRate $Prev[$Name].Rx $Cur[$Name].Rx $Seconds
+    $tx = Get-SshLanRate $Prev[$Name].Tx $Cur[$Name].Tx $Seconds
+    if ($null -eq $rx -and $null -eq $tx) { return $null }
+    return @{ Rx = $rx; Tx = $tx }
+}
+
+# addresses on the other end of an established connection on one of the SSH ports (either end), this PC and loopback left out
+function Get-SshLanLivePeers([object[]]$Connections, [int[]]$Ports, [string[]]$SelfIps) {
+    $self = @{}; foreach ($a in $SelfIps) { if ($a) { $self[[string]$a] = $true } }
+    $peers = New-Object System.Collections.Generic.List[string]
+    foreach ($c in $Connections) {
+        $ip = [string]$c.RemoteAddress
+        if (-not $ip -or $self.ContainsKey($ip) -or $ip -eq '::1' -or $ip -match '^127\.') { continue }
+        if (($Ports -contains [int]$c.LocalPort) -or ($Ports -contains [int]$c.RemotePort)) { if (-not $peers.Contains($ip)) { $peers.Add($ip) } }
+    }
+    return $peers.ToArray()
+}
+
+# one sample: NIC counters, SSH sessions open now, Tailscale peer counters. Slow readers (netstat, tailscale.exe) belong in a runspace
+function Read-SshLanTrafficSample([string]$LanIp, [string]$TailscaleExe = (Get-SshLanTailscaleExe)) {
+    $nic = Get-SshLanNicCounters $LanIp
+    $ports = @(22)
+    try { $ports += @((Get-SshLanPairedHosts).Values | ForEach-Object { [int]$_.Port }) } catch { }
+    $selfIps = @(); try { $selfIps = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.IPAddress }) } catch { }
+    $conns = @(); try { $conns = @(Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue) } catch { }
+    $ts = @{}
+    if ($TailscaleExe) { try { $ts = ConvertFrom-SshLanTailscaleCounters ((& $TailscaleExe status --json 2>$null) | Out-String) } catch { } }
+    return @{
+        Time = Get-Date; NicRx = $(if ($nic) { $nic.Rx } else { $null }); NicTx = $(if ($nic) { $nic.Tx } else { $null })
+        SshLive = @(Get-SshLanLivePeers $conns ($ports | Select-Object -Unique) $selfIps); Ts = $ts
+    }
+}
