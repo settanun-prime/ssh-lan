@@ -442,6 +442,9 @@ if ($btnAddClient) {
     Invoke-Logged {
         Add-Log 'กำลังเอา IP ชั่วคราวออก...'
         & (Join-Path $PSScriptRoot 'ssh-lan\set-lan-ip.ps1') -RemoveExtra
+        if (@(Get-SshLanExtraIps).Count) { throw "ยังเหลือ IP ชั่วคราว: $((Get-SshLanExtraIps) -join ', ')" }
+        (Find 'ExtraIpBox').Text = ''
+        Add-Log ' [✓] เอา IP ชั่วคราวออกแล้ว'
     }
 })
 

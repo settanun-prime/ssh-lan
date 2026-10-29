@@ -21,20 +21,28 @@ $cfg = Get-NetIPConfiguration |
 if (-not $cfg) { throw 'ไม่พบการ์ดเครือข่ายที่เชื่อมต่อ LAN ในบ้านอยู่' }
 
 $alias = $cfg.InterfaceAlias
-# with extra addresses on the card IPv4Address is a list: the real one is the address that is not SkipAsSource
-$main = @($cfg.IPv4Address | Where-Object { -not $_.SkipAsSource })[0]
-if (-not $main) { $main = @($cfg.IPv4Address)[0] }
+# same source as Get-SshLanExtraIps: Get-NetIPAddress (SkipAsSource). Config alone can miss extras on some builds.
+$addrs = @(Get-NetIPAddress -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction SilentlyContinue)
+$main = @($addrs | Where-Object { -not $_.SkipAsSource -and (Test-SshLanPrivateIp $_.IPAddress) })[0]
+if (-not $main) { $main = @($addrs | Where-Object { -not $_.SkipAsSource })[0] }
+if (-not $main) { $main = $addrs[0] }
 $current = $main.IPAddress
 $prefix = $main.PrefixLength
-$extrasNow = @($cfg.IPv4Address | Where-Object { $_.SkipAsSource } | ForEach-Object { $_.IPAddress })
+$extraObjs = @($addrs | Where-Object { $_.SkipAsSource -and (Test-SshLanPrivateIp $_.IPAddress) })
+$extrasNow = @($extraObjs | ForEach-Object { $_.IPAddress })
 $gateway = $cfg.IPv4DefaultGateway.NextHop
 $dns = @($cfg.DNSServer.ServerAddresses | Where-Object { $_ -match '^\d+\.\d+\.\d+\.\d+$' })
 if ($dns.Count -eq 0) { $dns = @($gateway) }
 Write-Host "การ์ด: $alias (ปัจจุบัน $current/$prefix, เกตเวย์ $gateway)"
 
 if ($RemoveExtra) {
-    if (-not $extrasNow) { Write-Host 'ไม่มี IP ชั่วคราวให้เอาออก'; return }
-    foreach ($e in $extrasNow) { Remove-NetIPAddress -InterfaceAlias $alias -IPAddress $e -Confirm:$false }
+    if (-not $extraObjs) { Write-Host 'ไม่มี IP ชั่วคราวให้เอาออก'; return }
+    foreach ($e in $extraObjs) {
+        Remove-NetIPAddress -InterfaceAlias $alias -IPAddress $e.IPAddress -PrefixLength $e.PrefixLength -Confirm:$false
+    }
+    $left = @(Get-NetIPAddress -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+        Where-Object { $_.SkipAsSource -and (Test-SshLanPrivateIp $_.IPAddress) } | ForEach-Object { $_.IPAddress })
+    if ($left) { throw "เอา IP ชั่วคราวออกไม่สำเร็จ: $($left -join ', ')" }
     Write-Host "เอา IP ชั่วคราวออกแล้ว: $($extrasNow -join ', ') — เครื่องนี้ใช้ $current อย่างเดียว"
     return
 }

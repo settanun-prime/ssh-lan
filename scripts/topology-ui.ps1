@@ -188,10 +188,10 @@ function Add-MapNode($Node, $Place, [int]$Begin, [bool]$Intro) {
         if ($tile) { $k.VerticalAlignment = 'Top'; $k.Margin = '18,4,0,0' } else { $k.VerticalAlignment = 'Bottom'; $k.Margin = '7,0,0,6' }
         [void]$grid.Children.Add($k)
     }
-    # purple corner mark = on the tailnet (membership). Not "reachable from every peer".
+    # purple mark = on the tailnet (membership). Top-right, left of the audit dot — never over the IP line.
     if (@($Node.TsIps).Count -and $Node.InLan -ne $false -and -not $small) {
         $tsMark = New-MapText 'TS' 9 '#C4B5FD' -Bold
-        $tsMark.HorizontalAlignment = 'Right'; $tsMark.VerticalAlignment = 'Bottom'; $tsMark.Margin = '0,0,6,5'
+        $tsMark.HorizontalAlignment = 'Right'; $tsMark.VerticalAlignment = 'Top'; $tsMark.Margin = '0,4,18,0'
         $tsMark.ToolTip = "มี Tailscale ($($Node.TsIps[0])) · ไม่ได้แปลว่าเข้าทุกบริการได้ ดูพอร์ตในแผงข้าง"
         [void]$grid.Children.Add($tsMark)
     }
