@@ -68,3 +68,8 @@ $withTs = Get-MapNodeFlowText @{ Key = 'k1'; IsSelf = $false; IsRouter = $false;
 Assert-True ($withTs -match 'Tailscale ↓ 10\.0 KB/s ↑ 0 B/s') "a Tailscale peer shows its rate (got: $withTs)"
 $script:MapFlowPrev = $null
 Assert-True ((Get-MapNodeFlowText @{ Key = 'k1'; IsSelf = $false; IsRouter = $false; Names = @(@{ name = 'box'; from = 'Tailscale' }) }) -match 'Tailscale.*กำลังวัด') 'Tailscale without two samples: measuring'
+# Windows animation effects off: the state is still computed, but nothing moves
+function Test-MapMotion { $false }
+Set-MapEdgeFlow 'nic' (& $flow 5000000 5000000)
+Assert-Equal (Get-Dots).Count 0 'with animations off a flowing line draws no dots'
+function Test-MapMotion { $true }
