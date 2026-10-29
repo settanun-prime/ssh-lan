@@ -59,6 +59,26 @@ Assert-True ($il.StrokeDashArray.Count -gt 0) 'internet down: dashed'
 Set-MapEdgeFlow 'internet' @{ State = 'unknown'; RxBps = $null; TxBps = $null; Fixed = $false; Why = 'x' }
 Assert-Equal $il.Stroke.Color.ToString() '#FF6B7487' 'no ping result: back to its own grey'
 
+# --- the Tailscale pairing picker: free peers only, the one whose LAN address matches first, then online ones ---
+$peers = @(
+    @{ name = 'zz-tab'; os = 'ios'; online = $true; ips = @('100.64.0.3'); self = $false; lanIps = @(); lastSeen = $null }
+    @{ name = 'aa-old'; os = 'windows'; online = $false; ips = @('100.64.0.4'); self = $false; lanIps = @(); lastSeen = (Get-Date '2026-10-01T08:30:00') }
+    @{ name = 'mm-phone'; os = 'android'; online = $true; ips = @('100.64.0.5'); self = $false; lanIps = @('192.0.2.10'); lastSeen = $null }
+    @{ name = 'me'; os = 'windows'; online = $true; ips = @('100.64.0.1'); self = $true; lanIps = @(); lastSeen = $null }
+    @{ name = 'taken'; os = 'linux'; online = $true; ips = @('100.64.0.6'); self = $false; lanIps = @(); lastSeen = $null })
+$rows = @(Get-MapTsPickRows $peers @('taken') '192.0.2.10')
+Assert-Equal (($rows | ForEach-Object { $_.Name }) -join ',') 'mm-phone,zz-tab,aa-old' 'match first, then online, then offline; this PC and paired peers left out'
+Assert-True $rows[0].Match 'the peer that announced this LAN address is recommended'
+Assert-True ($rows[0].Hint -match 'ตรงกัน') 'and says why'
+Assert-Equal $rows[1].HintShown 'Collapsed' 'no hint without a match'
+Assert-True ($rows[0].Detail -match '100\.64\.0\.5') 'shows the tailnet address'
+Assert-True ($rows[2].Detail -match 'ล่าสุด') 'an offline peer says when it was last seen'
+Assert-True ($rows[2].Fade -lt 1) 'an offline peer is dimmed'
+Assert-Equal @(Get-MapTsPickRows $peers @() '').Where({ $_.Match }).Count 0 'no address, no recommendation'
+$xaml = [IO.File]::ReadAllText((Join-Path $TestRoot 'scripts\ssh-lan-tspick.xaml'), [Text.Encoding]::UTF8)
+$pw = [Windows.Markup.XamlReader]::Parse($xaml)
+Assert-True ($pw.FindName('PickList') -and $pw.FindName('PickOk')) 'the picker window loads'
+
 # --- what a node says about its traffic (card on hover and side panel) ---
 $t0 = Get-Date '2026-10-29T10:00:00'
 $script:MapFlowPrev = @{ Time = $t0; Ts = @{ box = @{ Rx = 0; Tx = 0; Online = $true } } }

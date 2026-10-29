@@ -1,0 +1,88 @@
+﻿<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="จับคู่กับ Tailscale" Width="520" Height="560" MinWidth="420" MinHeight="380"
+        WindowStartupLocation="CenterOwner" Background="#0B0F17" ResizeMode="CanResizeWithGrip"
+        FontFamily="Leelawadee UI, Segoe UI" FontSize="14" Foreground="#F4F7FB">
+  <Window.Resources>
+    <Style x:Key="PickBtn" TargetType="Button">
+      <Setter Property="Foreground" Value="#DCE3F0"/>
+      <Setter Property="Background" Value="#151C2C"/>
+      <Setter Property="BorderBrush" Value="#2A3348"/>
+      <Setter Property="FontSize" Value="13"/>
+      <Setter Property="Height" Value="36"/>
+      <Setter Property="MinWidth" Value="96"/>
+      <Setter Property="Padding" Value="16,0"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="B" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1" CornerRadius="8" Padding="{TemplateBinding Padding}">
+              <ContentPresenter VerticalAlignment="Center" HorizontalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="B" Property="Opacity" Value="0.88"/></Trigger>
+              <Trigger Property="IsEnabled" Value="False"><Setter TargetName="B" Property="Opacity" Value="0.4"/></Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style x:Key="PickItem" TargetType="ListBoxItem">
+      <Setter Property="Margin" Value="0,0,0,8"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ListBoxItem">
+            <Border x:Name="C" Background="#121826" BorderBrush="#2A3348" BorderThickness="1" CornerRadius="10" Padding="14,10">
+              <ContentPresenter/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="C" Property="Background" Value="#1A2233"/></Trigger>
+              <Trigger Property="IsSelected" Value="True"><Setter TargetName="C" Property="BorderBrush" Value="#F5C451"/><Setter TargetName="C" Property="Background" Value="#1C1A12"/></Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+  </Window.Resources>
+  <Grid Margin="20,18,20,16">
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto"/>
+      <RowDefinition Height="Auto"/>
+      <RowDefinition Height="*"/>
+      <RowDefinition Height="Auto"/>
+    </Grid.RowDefinitions>
+    <TextBlock x:Name="PickTitle" FontSize="18" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+    <TextBlock Grid.Row="1" Margin="0,4,0,14" Foreground="#8F9BB3" FontSize="13" TextWrapping="Wrap"
+               Text="เลือกเครื่องใน Tailscale ที่เป็นเครื่องเดียวกับเครื่องนี้ แผนผังจะรวมเป็นกล่องเดียวและแสดงตัวเลข Tailscale ให้"/>
+    <ListBox x:Name="PickList" Grid.Row="2" Background="Transparent" BorderThickness="0" Padding="0"
+             ItemContainerStyle="{StaticResource PickItem}" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+      <ListBox.ItemTemplate>
+        <DataTemplate>
+          <Grid Opacity="{Binding Fade}">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="Auto"/>
+              <ColumnDefinition Width="*"/>
+              <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Text="{Binding Glyph}" FontFamily="Segoe MDL2 Assets" FontSize="22" Foreground="#DCE3F0" VerticalAlignment="Center" Margin="0,0,14,0"/>
+            <StackPanel Grid.Column="1" VerticalAlignment="Center">
+              <TextBlock Text="{Binding Name}" FontSize="15" FontWeight="SemiBold" Foreground="#F4F7FB" TextTrimming="CharacterEllipsis"/>
+              <TextBlock Text="{Binding Detail}" FontSize="12" Foreground="#8F9BB3" TextTrimming="CharacterEllipsis" Margin="0,2,0,0"/>
+              <TextBlock Text="{Binding Hint}" FontSize="12" Foreground="#F5C451" Margin="0,3,0,0" Visibility="{Binding HintShown}"/>
+            </StackPanel>
+            <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" Margin="12,0,0,0">
+              <Ellipse Width="8" Height="8" Fill="{Binding DotColor}" VerticalAlignment="Center" Margin="0,0,6,0"/>
+              <TextBlock Text="{Binding Status}" FontSize="12" Foreground="{Binding DotColor}"/>
+            </StackPanel>
+          </Grid>
+        </DataTemplate>
+      </ListBox.ItemTemplate>
+    </ListBox>
+    <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,14,0,0">
+      <Button x:Name="PickCancel" Content="ยกเลิก" Style="{StaticResource PickBtn}" IsCancel="True" Margin="0,0,10,0"/>
+      <Button x:Name="PickOk" Content="จับคู่" Style="{StaticResource PickBtn}" IsDefault="True" IsEnabled="False"
+              Foreground="#1A1405" Background="#F5C451" BorderBrush="#F5C451" FontWeight="SemiBold"/>
+    </StackPanel>
+  </Grid>
+</Window>

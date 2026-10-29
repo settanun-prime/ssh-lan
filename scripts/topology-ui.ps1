@@ -938,6 +938,43 @@ function Format-MapRate($Bps) {
     return ('{0:N0} B/s' -f $b)
 }
 
+# rows of the Tailscale pairing picker: peers not yet paired (this PC left out); the peer that announced $NodeIp
+# as its LAN address first (it is very likely the same device), then online, then by name
+function Get-MapTsPickRows($Peers, [string[]]$Linked, [string]$NodeIp) {
+    $glyph = @{ android = [char]0xE8EA; ios = [char]0xE8EA; windows = [char]0xE7F8; macos = [char]0xE7F8; linux = [char]0xE968 }
+    @($Peers | Where-Object { $_ -and -not $_.self -and @($Linked) -notcontains [string]$_.name } | ForEach-Object {
+        $match = [bool]($NodeIp -and @($_.lanIps) -contains $NodeIp)
+        $parts = @([string]$_.os) + @($_.ips | Select-Object -First 1)
+        if (-not $_.online -and $_.lastSeen) { $parts += 'ล่าสุด ' + ([datetime]$_.lastSeen).ToString('d MMM HH:mm') }
+        [pscustomobject]@{
+            Name = [string]$_.name; Match = $match; Online = [bool]$_.online
+            Glyph = $(if ($glyph[[string]$_.os]) { [string]$glyph[[string]$_.os] } else { [string][char]0xE774 })
+            Detail = (@($parts | Where-Object { $_ }) -join ' · ')
+            Hint = $(if ($match) { 'แนะนำ: IP ใน LAN ตรงกันกับเครื่องนี้' } else { '' })
+            HintShown = $(if ($match) { 'Visible' } else { 'Collapsed' })
+            Status = $(if ($_.online) { 'ออนไลน์' } else { 'ออฟไลน์' })
+            DotColor = $(if ($_.online) { '#4ADE80' } else { '#6B7487' })
+            Fade = $(if ($_.online) { 1.0 } else { 0.6 })
+        }
+    } | Sort-Object @{ e = { $_.Match }; Descending = $true }, @{ e = { $_.Online }; Descending = $true }, Name)
+}
+
+# the picker window; returns the chosen peer name or $null (double-click or Enter picks, Esc cancels)
+function Show-MapTsPicker([string]$Label, $Rows) {
+    $w = [Windows.Markup.XamlReader]::Parse([IO.File]::ReadAllText((Join-Path $PSScriptRoot 'ssh-lan-tspick.xaml'), [Text.Encoding]::UTF8))
+    if ($script:MapWin -and $script:MapWin.IsLoaded) { $w.Owner = $script:MapWin }
+    $w.FindName('PickTitle').Text = "จับคู่ $Label กับ Tailscale"
+    $list = $w.FindName('PickList'); $ok = $w.FindName('PickOk')
+    $list.ItemsSource = @($Rows)
+    if (@($Rows)[0].Match) { $list.SelectedIndex = 0 }
+    $ok.IsEnabled = $null -ne $list.SelectedItem
+    $list.Add_SelectionChanged({ $ok.IsEnabled = $null -ne $list.SelectedItem }.GetNewClosure())
+    $ok.Add_Click({ $w.DialogResult = $true }.GetNewClosure())
+    $list.Add_MouseDoubleClick({ if ($list.SelectedItem) { $w.DialogResult = $true } }.GetNewClosure())
+    if ($w.ShowDialog()) { return [string]$list.SelectedItem.Name }
+    return $null
+}
+
 # what a node says about its traffic: the line that reaches it (this PC = the NIC, the router = the internet line, others = their cable)
 function Get-MapNodeFlowText($Node) {
     $key = if ($Node.IsSelf) { 'nic' } elseif ($Node.IsRouter) { 'internet' } else { "lan:$($Node.Key)" }
@@ -1368,23 +1405,14 @@ function Show-MapWindow([object[]]$Devices, $Into) {
             try { Set-SshLanTsPeer $key ''; Update-MapModel; Add-Log "เลิกจับคู่ Tailscale แล้ว" } catch { Add-Log ('[!] ' + $_.Exception.Message) }
             return
         }
-        $linked = @((Get-SshLanTsLinks).Values)
-        # property names ASCII: PS 5.1 rejects bare Thai keys in @{ } and the whole app.ps1 fails to parse
-        $avail = @($script:MapData.Peers | Where-Object { $_ -and -not $_.self -and $linked -notcontains $_.name } |
-            Sort-Object name | ForEach-Object {
-                [pscustomobject]@{
-                    Name = [string]$_.name
-                    OS = [string]$_.os
-                    Status = $(if ($_.online) { 'online' } else { 'offline' })
-                }
-            })
+        $avail = @(Get-MapTsPickRows $script:MapData.Peers @((Get-SshLanTsLinks).Values) ([string]$n.Ip))
         if (-not $avail.Count) { Add-Log '[!] ไม่มีเครื่อง Tailscale ที่ยังว่างให้จับคู่'; return }
-        $pick = $avail | Out-GridView -Title "จับคู่ $($n.Label) กับ Tailscale" -OutputMode Single
+        $pick = Show-MapTsPicker ([string]$n.Label) $avail
         if (-not $pick) { return }
         try {
-            Set-SshLanTsPeer $key ([string]$pick.Name)
+            Set-SshLanTsPeer $key $pick
             Update-MapModel
-            Add-Log "จับคู่ $($n.Label) กับ Tailscale $($pick.Name) แล้ว"
+            Add-Log "จับคู่ $($n.Label) กับ Tailscale $pick แล้ว"
         } catch { Add-Log ('[!] ' + $_.Exception.Message) }
     })
     (Find-Map 'BtnSideSsh').Add_Click({
