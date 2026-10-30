@@ -274,6 +274,15 @@ function Show-SshLanSteps {
     Write-Host ''
 }
 
+# /32 picks in the allow-list: never this PC, the router, or network/broadcast
+function Test-SshLanAllowListHost([string]$Ip, [string[]]$Self, [string[]]$Gateways) {
+    if (-not $Ip -or -not (Test-SshLanPrivateIp $Ip)) { return $false }
+    if ($Ip -match '\.(0|255)$') { return $false }
+    if (@($Self) -contains $Ip) { return $false }
+    if (@($Gateways) -contains $Ip) { return $false }
+    return $true
+}
+
 function Get-SshLanIpChoices {
     $choices = [System.Collections.Generic.List[object]]::new()
     $seen = @{}
@@ -286,6 +295,9 @@ function Get-SshLanIpChoices {
         $choices.Add([pscustomobject]@{ Cidr = $norm; Note = $Note })
     }
     $local = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { Test-SshLanPrivateIp $_.IPAddress })
+    $self = @($local | ForEach-Object { [string]$_.IPAddress })
+    $gateways = @(Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue |
+        ForEach-Object { [string]$_.NextHop } | Where-Object { $_ -and $_ -ne '0.0.0.0' } | Select-Object -Unique)
     foreach ($a in $local) {
         Add-Choice (ConvertTo-SshLanCidr $a.IPAddress $a.PrefixLength) 'ทั้งวง LAN · แนะนำ'
     }
@@ -295,12 +307,27 @@ function Get-SshLanIpChoices {
         foreach ($c in $cur) { Add-Choice ([string]$c) 'ที่เปิดไว้อยู่ตอนนี้' }
     }
     Get-NetNeighbor -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-        Where-Object { (Test-SshLanPrivateIp $_.IPAddress) -and $_.State -in 'Reachable', 'Stale', 'Permanent' } |
-        ForEach-Object { Add-Choice "$($_.IPAddress)/32" "เครื่องในเครือข่าย" }
+        Where-Object { $_.State -in 'Reachable', 'Stale', 'Permanent' -and (Test-SshLanAllowListHost ([string]$_.IPAddress) $self $gateways) } |
+        ForEach-Object { Add-Choice "$($_.IPAddress)/32" 'เครื่องในเครือข่าย' }
+    # scan store fills gaps ARP forgot; without this the allow dropdown looks empty after a cold start
+    $knownPath = Get-SshLanKnownDevicesPath
+    if (Test-Path -LiteralPath $knownPath) {
+        try {
+            foreach ($d in ConvertFrom-SshLanJsonList (Get-Content -LiteralPath $knownPath -Raw -Encoding UTF8)) {
+                $ip = [string]$d.Ip
+                if (-not (Test-SshLanAllowListHost $ip $self $gateways)) { continue }
+                if (-not (Test-SshLanRecentlySeen ([string]$d.LastSeen))) { continue }
+                Add-Choice "$ip/32" 'เคยสแกนเจอ'
+            }
+        } catch { }
+    }
     try {
         # this app probes port 22 of its own PC often: read far enough back that real logins are not pushed out
-        $log = @(Get-WinEvent -LogName 'OpenSSH/Operational' -MaxEvents 1000 -ErrorAction SilentlyContinue | ForEach-Object { $_.Message })
-        foreach ($ip in Get-SshLanLoginSources $log @($local | ForEach-Object { $_.IPAddress })) { Add-Choice "$ip/32" 'เครื่องที่เคยเชื่อมต่อ' }
+        $log = @(Get-WinEvent -LogName 'OpenSSH/Operational' -MaxEvents 200 -ErrorAction SilentlyContinue | ForEach-Object { $_.Message })
+        foreach ($ip in Get-SshLanLoginSources $log $self) {
+            if (-not (Test-SshLanAllowListHost $ip $self $gateways)) { continue }
+            Add-Choice "$ip/32" 'เครื่องที่เคยเชื่อมต่อ'
+        }
     } catch { }
     return $choices
 }
