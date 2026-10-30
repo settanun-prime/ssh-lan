@@ -124,3 +124,29 @@ try { Assert-Equal (Get-SshLanNoSshReason '127.0.0.1' $lp) '' 'SSH listening: no
 $why = Get-SshLanNoSshReason '127.0.0.1' $lp
 Assert-True ($why -match 'ปฏิเสธ' -and $why -match 'SSH server') "refused explained: $why"
 Assert-True ((Get-SshLanNoSshReason '10.255.255.1' 22) -match 'ไม่มีอะไรตอบ') 'silence explained'
+
+# allow-list /32: never router, this PC, network, or broadcast
+$self = @('10.9.8.20'); $gw = @('10.9.8.1')
+Assert-True (Test-SshLanAllowListHost '10.9.8.50' $self $gw) 'neighbor host ok'
+Assert-True (-not (Test-SshLanAllowListHost '10.9.8.1' $self $gw)) 'gateway out'
+Assert-True (-not (Test-SshLanAllowListHost '10.9.8.20' $self $gw)) 'self out'
+Assert-True (-not (Test-SshLanAllowListHost '10.9.8.0' $self $gw)) 'network out'
+Assert-True (-not (Test-SshLanAllowListHost '10.9.8.255' $self $gw)) 'broadcast out'
+
+# allow dropdown must include recent scan hits even when ARP is cold (regression: list looked empty)
+$oldData = $env:SSH_LAN_DATA_DIR
+$env:SSH_LAN_DATA_DIR = Join-Path $env:TEMP ('ssh-lan-ipchoices-' + [guid]::NewGuid().ToString('N'))
+try {
+    New-Item -ItemType Directory -Path $env:SSH_LAN_DATA_DIR | Out-Null
+    $ghost = '192.168.1.199'
+    @(
+        [pscustomobject]@{ Ip = $ghost; Mac = '02-00-00-00-00-99'; Name = 'ghost'; LastSeen = (Get-Date).ToString('o') }
+        [pscustomobject]@{ Ip = '192.168.1.1'; Mac = '02-00-00-00-00-01'; Name = 'router'; LastSeen = (Get-Date).ToString('o') }
+    ) | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $env:SSH_LAN_DATA_DIR 'devices.json') -Encoding UTF8
+    $cidrs = @(Get-SshLanIpChoices | ForEach-Object { $_.Cidr })
+    Assert-True ($cidrs -contains "$ghost/32") "scan hit in choices: $($cidrs -join ',')"
+    Assert-True ($cidrs -notcontains '192.168.1.1/32') 'gateway still out of /32 picks'
+} finally {
+    Remove-Item -LiteralPath $env:SSH_LAN_DATA_DIR -Recurse -Force -ErrorAction SilentlyContinue
+    $env:SSH_LAN_DATA_DIR = $oldData
+}

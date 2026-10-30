@@ -76,6 +76,8 @@ function Show-AuditYesNo([string]$Text) {
 function Start-AuditRun([object[]]$Devices, [string]$ExitNode = '') {
     if (Test-AuditBusy) { return }
     Set-AuditBusy $true
+    try { Start-SshLanBusyMotion } catch { }
+    try { if (Get-Command Start-MapLoadMotion -ErrorAction SilentlyContinue) { Start-MapLoadMotion 'กำลังตรวจความปลอดภัย...' } } catch { }
     $script:AuditPs = [powershell]::Create()
     $null = $script:AuditPs.AddScript({
         param($Root, $Devices, $ExitNode)
@@ -143,6 +145,8 @@ function Start-AuditRun([object[]]$Devices, [string]$ExitNode = '') {
             while ($e.InnerException) { $e = $e.InnerException }
             (Find-Audit 'AuditStatus').Text = '[!] ' + $e.Message
         } finally {
+            try { if (Get-Command Stop-MapLoadMotion -ErrorAction SilentlyContinue) { Stop-MapLoadMotion } } catch { }
+            try { if (-not $script:Busy) { Stop-SshLanBusyMotion } } catch { }
             if ($script:AuditPs) {
                 try { $script:AuditPs.Dispose() } catch {}
                 $script:AuditPs = $null

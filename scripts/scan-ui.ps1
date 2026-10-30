@@ -28,6 +28,7 @@ function Start-LanScan {
     if ($script:ScanPs) { return }
     (Find-Scan 'BtnScan').IsEnabled = $false
     (Find-Scan 'ScanStatus').Text = 'กำลังสแกน...'
+    try { Start-SshLanBusyMotion } catch { }
     $script:ScanPs = [powershell]::Create()
     $null = $script:ScanPs.AddScript({
         param($Root, $Range)
@@ -55,6 +56,7 @@ function Start-LanScan {
             while ($e.InnerException) { $e = $e.InnerException }
             (Find-Scan 'ScanStatus').Text = '[!] ' + $e.Message
         } finally {
+            try { if (-not $script:Busy) { Stop-SshLanBusyMotion } } catch { }
             $script:ScanPs.Dispose()
             $script:ScanPs = $null
             (Find-Scan 'BtnScan').IsEnabled = $true

@@ -692,6 +692,7 @@ function Complete-MapControl([bool]$Ok, [string]$Message) {
     $script:MapActPs = $null
     $script:MapActHandle = $null
     if ($script:MapActTimer) { $script:MapActTimer.Stop() }
+    Stop-MapLoadMotion
     if ($script:MapWin) {
         try { (Find-Map 'SideBody').IsEnabled = $true } catch {}
         try { (Find-Map 'BtnMapScan').IsEnabled = $true } catch {}
@@ -726,7 +727,7 @@ function Start-MapControl([string]$Key, [string]$Mode, $Finding, $Switch, [strin
     $script:MapSudo = $null
     $script:MapSudoProc = $null
     try { (Find-Map 'SideBody').IsEnabled = $false; (Find-Map 'BtnMapScan').IsEnabled = $false } catch {}
-    (Find-Map 'MapStatus').Text = "กำลัง $Label บน $($n.Label)…"
+    Start-MapLoadMotion "กำลัง $Label บน $($n.Label)…"
     $script:MapActPs = [powershell]::Create()
     $null = $script:MapActPs.AddScript({
         param($Root, $Mode, $Device, $Finding, $Switch, $Os, $What, $Port, $Hours, $ChangeId)
@@ -1185,13 +1186,44 @@ function Select-MapNode([string]$Key) {
     (Find-Map 'BtnSidePair').IsEnabled = [bool]($n.InLan -and -not $n.IsSelf -and -not $n.IsRouter)
 }
 
+function Start-MapLoadMotion([string]$Label = 'กำลังสแกน...') {
+    try { Start-SshLanBusyMotion } catch { }
+    $emptyLoad = Find-Map 'MapEmptyLoad'
+    $slide = Find-Map 'MapEmptySlide'
+    if ($emptyLoad) {
+        $emptyLoad.Visibility = 'Visible'
+        if ($slide -and (Test-MapMotion)) {
+            $a = New-Object Windows.Media.Animation.DoubleAnimation
+            $a.From = -36; $a.To = 96
+            $a.Duration = [TimeSpan]::FromSeconds(1.8)
+            $a.RepeatBehavior = [Windows.Media.Animation.RepeatBehavior]::Forever
+            $ease = New-Object Windows.Media.Animation.SineEase
+            $ease.EasingMode = 'EaseInOut'
+            $a.EasingFunction = $ease
+            $slide.BeginAnimation([Windows.Media.TranslateTransform]::XProperty, $a)
+        }
+    }
+    try { (Find-Map 'MapStatus').Text = $Label } catch { }
+}
+
+function Stop-MapLoadMotion {
+    $slide = Find-Map 'MapEmptySlide'
+    if ($slide) { $slide.BeginAnimation([Windows.Media.TranslateTransform]::XProperty, $null); $slide.X = -36 }
+    $emptyLoad = Find-Map 'MapEmptyLoad'
+    if ($emptyLoad) { $emptyLoad.Visibility = 'Collapsed' }
+    try { if (-not $script:Busy) { Stop-SshLanBusyMotion } } catch { }
+}
+
 # --- data: scan + Tailscale + latest audit in the background, then draw ---
 function Start-MapRefresh([object[]]$Devices) {
     if ($script:MapPs) { return }
     (Find-Map 'BtnMapScan').IsEnabled = $false
-    (Find-Map 'MapStatus').Text = 'กำลังสแกน...'
     # first scan: say what is happening instead of an empty map
-    if (-not $script:MapModel) { (Find-Map 'MapEmpty').Text = 'กำลังสแกนวง LAN ราว 10–20 วินาที...'; (Find-Map 'MapEmpty').Visibility = 'Visible' }
+    if (-not $script:MapModel) {
+        (Find-Map 'MapEmptyText').Text = 'กำลังสแกนวง LAN ราว 10–20 วินาที...'
+        (Find-Map 'MapEmpty').Visibility = 'Visible'
+    }
+    Start-MapLoadMotion 'กำลังสแกน...'
     $script:MapPs = [powershell]::Create()
     $null = $script:MapPs.AddScript({
         param($Root, $Devices)
@@ -1206,7 +1238,7 @@ function Start-MapRefresh([object[]]$Devices) {
     $script:MapTimer = New-Object Windows.Threading.DispatcherTimer
     $script:MapTimer.Interval = [TimeSpan]::FromMilliseconds(250)
     $script:MapTimer.Add_Tick({
-        if (-not $script:MapWin) { $script:MapTimer.Stop(); return }
+        if (-not $script:MapWin) { $script:MapTimer.Stop(); Stop-MapLoadMotion; return }
         $secs = [int]((Get-Date) - $script:MapStarted).TotalSeconds
         if (-not $script:MapHandle.IsCompleted) { (Find-Map 'MapStatus').Text = "กำลังสแกน... $secs วินาที"; return }
         $script:MapTimer.Stop()
@@ -1220,6 +1252,7 @@ function Start-MapRefresh([object[]]$Devices) {
             while ($e.InnerException) { $e = $e.InnerException }
             (Find-Map 'MapStatus').Text = '[!] ' + $e.Message
         } finally {
+            Stop-MapLoadMotion
             $script:MapPs.Dispose()
             $script:MapPs = $null
             (Find-Map 'BtnMapScan').IsEnabled = $true
@@ -1260,7 +1293,7 @@ function Show-MapLayout {
     $script:MapFlow = @{}
     $script:MapTempBadges = New-Object System.Collections.Generic.List[object]
     $nodes = @($script:MapModel.Nodes)
-    (Find-Map 'MapEmpty').Text = 'ยังไม่พบเครื่อง กดสแกนใหม่'
+    (Find-Map 'MapEmptyText').Text = 'ยังไม่พบเครื่อง กดสแกนใหม่'
     (Find-Map 'MapEmpty').Visibility = $(if ($nodes.Count) { 'Collapsed' } else { 'Visible' })
     if (-not $nodes.Count -and -not @($script:MapModel.Tailscale).Count) { return }
     $avail = (Find-Map 'MapScroll').ActualWidth

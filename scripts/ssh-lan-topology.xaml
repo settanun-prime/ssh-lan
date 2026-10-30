@@ -163,7 +163,25 @@
             <Canvas.LayoutTransform><ScaleTransform x:Name="MapScale" ScaleX="1" ScaleY="1"/></Canvas.LayoutTransform>
           </Canvas>
         </ScrollViewer>
-        <TextBlock x:Name="MapEmpty" Text="ยังไม่พบเครื่อง กดสแกนใหม่" FontSize="16" Foreground="#6B7487" HorizontalAlignment="Center" VerticalAlignment="Center" Visibility="Collapsed"/>
+        <!-- empty / first-scan state: label + hairline motion under it (not an overlay on devices) -->
+        <StackPanel x:Name="MapEmpty" HorizontalAlignment="Center" VerticalAlignment="Center" Visibility="Collapsed">
+          <TextBlock x:Name="MapEmptyText" Text="ยังไม่พบเครื่อง กดสแกนใหม่" FontSize="16" Foreground="#6B7487" HorizontalAlignment="Center"/>
+          <Border x:Name="MapEmptyLoad" Width="96" Height="1" Margin="0,16,0,0" Background="#1B2336" CornerRadius="1"
+                  ClipToBounds="True" HorizontalAlignment="Center" Visibility="Collapsed">
+            <Border Width="36" Height="1" HorizontalAlignment="Left" CornerRadius="1">
+              <Border.Background>
+                <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
+                  <GradientStop Color="#008F9BB3" Offset="0"/>
+                  <GradientStop Color="#C8D0DC" Offset="0.5"/>
+                  <GradientStop Color="#008F9BB3" Offset="1"/>
+                </LinearGradientBrush>
+              </Border.Background>
+              <Border.RenderTransform>
+                <TranslateTransform x:Name="MapEmptySlide" X="-36"/>
+              </Border.RenderTransform>
+            </Border>
+          </Border>
+        </StackPanel>
       </Grid>
     </Border>
 

@@ -181,7 +181,10 @@ function Invoke-SshLanHarden {
         PasswordAuthentication = 'no'; PubkeyAuthentication = 'yes'; KbdInteractiveAuthentication = 'no'
         AuthenticationMethods = 'publickey'; PermitEmptyPasswords = 'no'; MaxAuthTries = '3'; AllowUsers = $LoginUser
     }
+    Test-SshLanSshdConfig
     Set-Service sshd -StartupType Automatic
+    # Automatic alone leaves a Disabled/Stopped service down after "ปิดการรับ"; start so the ready message is true
+    Start-Service sshd
     if ($env:SSH_LAN_UI) {
         Write-Host "เปิดรับ SSH สำเร็จ (อนุญาตเครือข่าย: $SubnetIn)"
         Write-Host "บริการ OpenSSH Server (sshd) เริ่มทำงานและพร้อมรับการเชื่อมต่อแล้ว"
@@ -199,16 +202,43 @@ function Invoke-SshLanRemove {
         & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath -Action remove -UninstallServer
         exit $LASTEXITCODE
     }
+    # same any-address rules Harden strips; Windows can recreate OpenSSH-Server-* after an update
+    Get-NetFirewallRule -Name '*OpenSSH-Server*' -ErrorAction SilentlyContinue | Remove-NetFirewallRule
     Get-NetFirewallRule -Name sshd-lan -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+    Get-NetFirewallRule -Name 'sshlan-temp-22-*' -ErrorAction SilentlyContinue | ForEach-Object {
+        $n = $_.Name
+        Remove-NetFirewallRule -Name $n -ErrorAction SilentlyContinue
+        Unregister-ScheduledTask -TaskName "SSH LAN expire $n" -Confirm:$false -ErrorAction SilentlyContinue
+    }
     if (Get-Service sshd -ErrorAction SilentlyContinue) {
         Stop-Service sshd -Force -ErrorAction SilentlyContinue
         Set-Service sshd -StartupType Disabled
     }
     if ($Uninstall) { Remove-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0 | Out-Null }
+    $listen = @(Get-NetTCPConnection -LocalPort 22 -State Listen -ErrorAction SilentlyContinue)
     if ($env:SSH_LAN_UI) {
         Write-Host "ปิดการรับ SSH บนเครื่องนี้เรียบร้อย"
+        if ($listen.Count) {
+            Write-Host " [!] พอร์ต 22 ยัง Listen อยู่ ($($listen.Count) socket) — ตรวจว่ามีโปรแกรมอื่นเปิด SSH หรือยัง"
+        } else {
+            Write-Host " [✓] พอร์ต 22 ไม่รับการเชื่อมต่อแล้ว"
+        }
+        Write-Host "แผนผังอาจยังมีจุดวิ่ง: ทราฟฟิกการ์ดเน็ต / session SSH ขาออก / Tailscale — ไม่ได้แปลว่าเครื่องนี้ยังรับ SSH"
+        $amber = 0
+        try {
+            $audit = Get-SshLanLatestAudit
+            $me = Get-SshLanPrimaryLanIp
+            if ($audit -and $me) {
+                $m = @($audit.Machines | Where-Object { [string]$_.Ip -eq $me })[0]
+                if ($m) { $amber = [int]$m.Amber }
+            }
+        } catch { }
+        if ($amber -gt 0) {
+            Write-Host "จุดเหลืองบนแผนผัง = ผล audit ($amber รายการควรตรวจ) ไม่เกี่ยวกับปุ่มปิด SSH · คลิกเครื่องนี้ → แผงข้าง เพื่อปิดทีละพอร์ต"
+        }
     } else {
         Write-Host 'Remove OK.' -ForegroundColor Green
+        if ($listen.Count) { Write-Host "WARN: port 22 still listening ($($listen.Count))" -ForegroundColor Yellow }
     }
 }
 
@@ -274,6 +304,15 @@ function Show-SshLanSteps {
     Write-Host ''
 }
 
+# /32 picks in the allow-list: never this PC, the router, or network/broadcast
+function Test-SshLanAllowListHost([string]$Ip, [string[]]$Self, [string[]]$Gateways) {
+    if (-not $Ip -or -not (Test-SshLanPrivateIp $Ip)) { return $false }
+    if ($Ip -match '\.(0|255)$') { return $false }
+    if (@($Self) -contains $Ip) { return $false }
+    if (@($Gateways) -contains $Ip) { return $false }
+    return $true
+}
+
 function Get-SshLanIpChoices {
     $choices = [System.Collections.Generic.List[object]]::new()
     $seen = @{}
@@ -286,6 +325,9 @@ function Get-SshLanIpChoices {
         $choices.Add([pscustomobject]@{ Cidr = $norm; Note = $Note })
     }
     $local = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { Test-SshLanPrivateIp $_.IPAddress })
+    $self = @($local | ForEach-Object { [string]$_.IPAddress })
+    $gateways = @(Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue |
+        ForEach-Object { [string]$_.NextHop } | Where-Object { $_ -and $_ -ne '0.0.0.0' } | Select-Object -Unique)
     foreach ($a in $local) {
         Add-Choice (ConvertTo-SshLanCidr $a.IPAddress $a.PrefixLength) 'ทั้งวง LAN · แนะนำ'
     }
@@ -295,12 +337,27 @@ function Get-SshLanIpChoices {
         foreach ($c in $cur) { Add-Choice ([string]$c) 'ที่เปิดไว้อยู่ตอนนี้' }
     }
     Get-NetNeighbor -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-        Where-Object { (Test-SshLanPrivateIp $_.IPAddress) -and $_.State -in 'Reachable', 'Stale', 'Permanent' } |
-        ForEach-Object { Add-Choice "$($_.IPAddress)/32" "เครื่องในเครือข่าย" }
+        Where-Object { $_.State -in 'Reachable', 'Stale', 'Permanent' -and (Test-SshLanAllowListHost ([string]$_.IPAddress) $self $gateways) } |
+        ForEach-Object { Add-Choice "$($_.IPAddress)/32" 'เครื่องในเครือข่าย' }
+    # scan store fills gaps ARP forgot; without this the allow dropdown looks empty after a cold start
+    $knownPath = Get-SshLanKnownDevicesPath
+    if (Test-Path -LiteralPath $knownPath) {
+        try {
+            foreach ($d in ConvertFrom-SshLanJsonList (Get-Content -LiteralPath $knownPath -Raw -Encoding UTF8)) {
+                $ip = [string]$d.Ip
+                if (-not (Test-SshLanAllowListHost $ip $self $gateways)) { continue }
+                if (-not (Test-SshLanRecentlySeen ([string]$d.LastSeen))) { continue }
+                Add-Choice "$ip/32" 'เคยสแกนเจอ'
+            }
+        } catch { }
+    }
     try {
         # this app probes port 22 of its own PC often: read far enough back that real logins are not pushed out
-        $log = @(Get-WinEvent -LogName 'OpenSSH/Operational' -MaxEvents 1000 -ErrorAction SilentlyContinue | ForEach-Object { $_.Message })
-        foreach ($ip in Get-SshLanLoginSources $log @($local | ForEach-Object { $_.IPAddress })) { Add-Choice "$ip/32" 'เครื่องที่เคยเชื่อมต่อ' }
+        $log = @(Get-WinEvent -LogName 'OpenSSH/Operational' -MaxEvents 200 -ErrorAction SilentlyContinue | ForEach-Object { $_.Message })
+        foreach ($ip in Get-SshLanLoginSources $log $self) {
+            if (-not (Test-SshLanAllowListHost $ip $self $gateways)) { continue }
+            Add-Choice "$ip/32" 'เครื่องที่เคยเชื่อมต่อ'
+        }
     } catch { }
     return $choices
 }
@@ -1134,6 +1191,8 @@ function Find-SshLanLanDevices([string]$Range) {
             Evidence = ($proof -join ' | '); Clash = $clash
         })
     }
+    # push-inventory overlay: agent MAC/hostname beat ARP/DNS when the report is fresh
+    [void](Apply-SshLanInventoryToDevices $rows)
     $seenMacs = @($rows | ForEach-Object { $_.Mac } | Where-Object { $_ })
     foreach ($k in $known) {
         if (-not $k.Ip -or $alive.ContainsKey($k.Ip) -or $ips -notcontains $k.Ip) { continue }
@@ -1358,6 +1417,8 @@ function Start-SshLanTui {
 . (Join-Path $PSScriptRoot 'audit-rules.ps1')
 . (Join-Path $PSScriptRoot 'audit-collect.ps1')
 . (Join-Path $PSScriptRoot 'fleet.ps1')
+. (Join-Path $PSScriptRoot 'inventory-agent.ps1')
+. (Join-Path $PSScriptRoot 'inventory.ps1')
 . (Join-Path $PSScriptRoot 'router.ps1')
 . (Join-Path $PSScriptRoot 'audit.ps1')
 . (Join-Path $PSScriptRoot 'topology.ps1')
