@@ -1,4 +1,4 @@
-﻿. "$PSScriptRoot\assert.ps1"
+. "$PSScriptRoot\assert.ps1"
 $env:SSH_LAN_DATA_DIR = Join-Path $env:TEMP "sshlan-inv-test-$(Get-Random)"
 Remove-Item $env:SSH_LAN_DATA_DIR -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $env:SSH_LAN_DATA_DIR | Out-Null

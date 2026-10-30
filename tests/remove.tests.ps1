@@ -1,4 +1,4 @@
-﻿. "$PSScriptRoot\assert.ps1"
+. "$PSScriptRoot\assert.ps1"
 . (Join-Path $TestRoot 'scripts\ssh-lan-common.ps1')
 . (Join-Path $TestRoot 'scripts\ssh-lan\ssh-lan.ps1')
 
